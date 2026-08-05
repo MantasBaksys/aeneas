@@ -25,25 +25,25 @@ def test_chunks_exact_exact_fit : Result Unit := do
   let (o, it1) ← core.slice.iter.IteratorChunksExact.next it
   let c1 ← core.option.Option.unwrap o
   let i ← Slice.index_usize c1 0#usize
-  massert (i = 1#u32)
+  massert (decide (i = 1#u32))
   let i1 ← Slice.index_usize c1 1#usize
-  massert (i1 = 2#u32)
+  massert (decide (i1 = 2#u32))
   let i2 ← Slice.index_usize c1 2#usize
-  massert (i2 = 3#u32)
+  massert (decide (i2 = 3#u32))
   let (o1, it2) ← core.slice.iter.IteratorChunksExact.next it1
   let c2 ← core.option.Option.unwrap o1
   let i3 ← Slice.index_usize c2 0#usize
-  massert (i3 = 4#u32)
+  massert (decide (i3 = 4#u32))
   let i4 ← Slice.index_usize c2 1#usize
-  massert (i4 = 5#u32)
+  massert (decide (i4 = 5#u32))
   let i5 ← Slice.index_usize c2 2#usize
-  massert (i5 = 6#u32)
+  massert (decide (i5 = 6#u32))
   let (o2, it3) ← core.slice.iter.IteratorChunksExact.next it2
   let b := core.option.Option.is_none o2
   massert b
   let rem ← core.slice.iter.ChunksExact.getRemainder it3
   let i6 := Slice.len rem
-  massert (i6 = 0#usize)
+  massert (decide (i6 = 0#usize))
 
 /- Unit test for [chunks_exact::test_chunks_exact_exact_fit] -/
 #assert (test_chunks_exact_exact_fit == ok ())
@@ -59,27 +59,27 @@ def test_chunks_exact_with_remainder : Result Unit := do
   let (o, it1) ← core.slice.iter.IteratorChunksExact.next it
   let c1 ← core.option.Option.unwrap o
   let i ← Slice.index_usize c1 0#usize
-  massert (i = 1#u32)
+  massert (decide (i = 1#u32))
   let i1 ← Slice.index_usize c1 1#usize
-  massert (i1 = 2#u32)
+  massert (decide (i1 = 2#u32))
   let i2 ← Slice.index_usize c1 2#usize
-  massert (i2 = 3#u32)
+  massert (decide (i2 = 3#u32))
   let (o1, it2) ← core.slice.iter.IteratorChunksExact.next it1
   let c2 ← core.option.Option.unwrap o1
   let i3 ← Slice.index_usize c2 0#usize
-  massert (i3 = 4#u32)
+  massert (decide (i3 = 4#u32))
   let i4 ← Slice.index_usize c2 1#usize
-  massert (i4 = 5#u32)
+  massert (decide (i4 = 5#u32))
   let i5 ← Slice.index_usize c2 2#usize
-  massert (i5 = 6#u32)
+  massert (decide (i5 = 6#u32))
   let (o2, it3) ← core.slice.iter.IteratorChunksExact.next it2
   let b := core.option.Option.is_none o2
   massert b
   let rem ← core.slice.iter.ChunksExact.getRemainder it3
   let i6 := Slice.len rem
-  massert (i6 = 1#usize)
+  massert (decide (i6 = 1#usize))
   let i7 ← Slice.index_usize rem 0#usize
-  massert (i7 = 7#u32)
+  massert (decide (i7 = 7#u32))
 
 /- Unit test for [chunks_exact::test_chunks_exact_with_remainder] -/
 #assert (test_chunks_exact_with_remainder == ok ())
@@ -95,21 +95,21 @@ def test_chunks_exact_remainder_2 : Result Unit := do
   let (o, it1) ← core.slice.iter.IteratorChunksExact.next it
   let c ← core.option.Option.unwrap o
   let i ← Slice.index_usize c 0#usize
-  massert (i = 10#u32)
+  massert (decide (i = 10#u32))
   let i1 ← Slice.index_usize c 1#usize
-  massert (i1 = 20#u32)
+  massert (decide (i1 = 20#u32))
   let i2 ← Slice.index_usize c 2#usize
-  massert (i2 = 30#u32)
+  massert (decide (i2 = 30#u32))
   let (o1, it2) ← core.slice.iter.IteratorChunksExact.next it1
   let b := core.option.Option.is_none o1
   massert b
   let rem ← core.slice.iter.ChunksExact.getRemainder it2
   let i3 := Slice.len rem
-  massert (i3 = 2#usize)
+  massert (decide (i3 = 2#usize))
   let i4 ← Slice.index_usize rem 0#usize
-  massert (i4 = 40#u32)
+  massert (decide (i4 = 40#u32))
   let i5 ← Slice.index_usize rem 1#usize
-  massert (i5 = 50#u32)
+  massert (decide (i5 = 50#u32))
 
 /- Unit test for [chunks_exact::test_chunks_exact_remainder_2] -/
 #assert (test_chunks_exact_remainder_2 == ok ())
@@ -124,21 +124,21 @@ def test_chunks_exact_size_1 : Result Unit := do
   let (o, it1) ← core.slice.iter.IteratorChunksExact.next it
   let c1 ← core.option.Option.unwrap o
   let i ← Slice.index_usize c1 0#usize
-  massert (i = 10#u32)
+  massert (decide (i = 10#u32))
   let (o1, it2) ← core.slice.iter.IteratorChunksExact.next it1
   let c2 ← core.option.Option.unwrap o1
   let i1 ← Slice.index_usize c2 0#usize
-  massert (i1 = 20#u32)
+  massert (decide (i1 = 20#u32))
   let (o2, it3) ← core.slice.iter.IteratorChunksExact.next it2
   let c3 ← core.option.Option.unwrap o2
   let i2 ← Slice.index_usize c3 0#usize
-  massert (i2 = 30#u32)
+  massert (decide (i2 = 30#u32))
   let (o3, it4) ← core.slice.iter.IteratorChunksExact.next it3
   let b := core.option.Option.is_none o3
   massert b
   let rem ← core.slice.iter.ChunksExact.getRemainder it4
   let i3 := Slice.len rem
-  massert (i3 = 0#usize)
+  massert (decide (i3 = 0#usize))
 
 /- Unit test for [chunks_exact::test_chunks_exact_size_1] -/
 #assert (test_chunks_exact_size_1 == ok ())
@@ -154,7 +154,7 @@ def test_chunks_exact_empty : Result Unit := do
   massert b
   let rem ← core.slice.iter.ChunksExact.getRemainder it1
   let i := Slice.len rem
-  massert (i = 0#usize)
+  massert (decide (i = 0#usize))
 
 /- Unit test for [chunks_exact::test_chunks_exact_empty] -/
 #assert (test_chunks_exact_empty == ok ())
@@ -170,11 +170,11 @@ def test_chunks_exact_chunk_larger_than_slice : Result Unit := do
   massert b
   let rem ← core.slice.iter.ChunksExact.getRemainder it1
   let i := Slice.len rem
-  massert (i = 2#usize)
+  massert (decide (i = 2#usize))
   let i1 ← Slice.index_usize rem 0#usize
-  massert (i1 = 1#u32)
+  massert (decide (i1 = 1#u32))
   let i2 ← Slice.index_usize rem 1#usize
-  massert (i2 = 2#u32)
+  massert (decide (i2 = 2#u32))
 
 /- Unit test for [chunks_exact::test_chunks_exact_chunk_larger_than_slice] -/
 #assert (test_chunks_exact_chunk_larger_than_slice == ok ())
@@ -188,17 +188,17 @@ def test_chunks_exact_chunk_equals_slice : Result Unit := do
   let (o, it1) ← core.slice.iter.IteratorChunksExact.next it
   let c ← core.option.Option.unwrap o
   let i ← Slice.index_usize c 0#usize
-  massert (i = 1#u32)
+  massert (decide (i = 1#u32))
   let i1 ← Slice.index_usize c 1#usize
-  massert (i1 = 2#u32)
+  massert (decide (i1 = 2#u32))
   let i2 ← Slice.index_usize c 2#usize
-  massert (i2 = 3#u32)
+  massert (decide (i2 = 3#u32))
   let (o1, it2) ← core.slice.iter.IteratorChunksExact.next it1
   let b := core.option.Option.is_none o1
   massert b
   let rem ← core.slice.iter.ChunksExact.getRemainder it2
   let i3 := Slice.len rem
-  massert (i3 = 0#usize)
+  massert (decide (i3 = 0#usize))
 
 /- Unit test for [chunks_exact::test_chunks_exact_chunk_equals_slice] -/
 #assert (test_chunks_exact_chunk_equals_slice == ok ())
@@ -214,23 +214,23 @@ def test_chunks_exact_2_odd : Result Unit := do
   let (o, it1) ← core.slice.iter.IteratorChunksExact.next it
   let c1 ← core.option.Option.unwrap o
   let i ← Slice.index_usize c1 0#usize
-  massert (i = 1#u32)
+  massert (decide (i = 1#u32))
   let i1 ← Slice.index_usize c1 1#usize
-  massert (i1 = 2#u32)
+  massert (decide (i1 = 2#u32))
   let (o1, it2) ← core.slice.iter.IteratorChunksExact.next it1
   let c2 ← core.option.Option.unwrap o1
   let i2 ← Slice.index_usize c2 0#usize
-  massert (i2 = 3#u32)
+  massert (decide (i2 = 3#u32))
   let i3 ← Slice.index_usize c2 1#usize
-  massert (i3 = 4#u32)
+  massert (decide (i3 = 4#u32))
   let (o2, it3) ← core.slice.iter.IteratorChunksExact.next it2
   let b := core.option.Option.is_none o2
   massert b
   let rem ← core.slice.iter.ChunksExact.getRemainder it3
   let i4 := Slice.len rem
-  massert (i4 = 1#usize)
+  massert (decide (i4 = 1#usize))
   let i5 ← Slice.index_usize rem 0#usize
-  massert (i5 = 5#u32)
+  massert (decide (i5 = 5#u32))
 
 /- Unit test for [chunks_exact::test_chunks_exact_2_odd] -/
 #assert (test_chunks_exact_2_odd == ok ())
@@ -246,9 +246,9 @@ def test_chunks_exact_2_single_element : Result Unit := do
   massert b
   let rem ← core.slice.iter.ChunksExact.getRemainder it1
   let i := Slice.len rem
-  massert (i = 1#usize)
+  massert (decide (i = 1#usize))
   let i1 ← Slice.index_usize rem 0#usize
-  massert (i1 = 42#u32)
+  massert (decide (i1 = 42#u32))
 
 /- Unit test for [chunks_exact::test_chunks_exact_2_single_element] -/
 #assert (test_chunks_exact_2_single_element == ok ())

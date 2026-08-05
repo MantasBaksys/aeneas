@@ -588,8 +588,31 @@ let extract_unop (span : Meta.span)
     - argument 1 *)
 let extract_binop (span : Meta.span) (ctx : extraction_ctx)
     (extract_expr : inside:bool -> texpr -> unit) (fmt : F.formatter)
-    ~(inside : bool) (binop : binop) (arg0 : texpr) (arg1 : texpr) : unit =
+    ~(inside : bool) ?(comparison_as_prop : bool = false) (binop : binop)
+    (arg0 : texpr) (arg1 : texpr) : unit =
+  (* In the Lean backend the comparison operators [=], [<], [<=], [>=], [>]
+     elaborate to [Prop], not to [Bool] (they go through [Decidable]). This is
+     fine when the comparison is used directly as the condition of an [if], but
+     when it appears in a value position (e.g. the argument of [ok], a tuple
+     component, or a let-binding whose type is [Bool]) Lean coerces the *other*
+     side to [Prop] and the term ends up ill-typed against the expected [Bool].
+     We therefore wrap such comparisons in [decide (...)] to get a [Bool],
+     except when they are the direct scrutinee of an [if] (handled in
+     [extract_Switch] via [opt_destruct_prop_comparison]), in which case
+     [comparison_as_prop] is set and we keep the [Prop] form so that
+     dependent-if still yields [h : a < b].
+     Note that [!=] ([Ne]) is already [Bool]-valued in Lean, so it needs no
+     wrapping. *)
+  let wrap_decide =
+    backend () = Lean
+    && (not comparison_as_prop)
+    &&
+    match binop with
+    | Eq _ | Lt _ | Le _ | Ge _ | Gt _ -> true
+    | _ -> false
+  in
   if inside then F.pp_print_string fmt "(";
+  if wrap_decide then F.pp_print_string fmt "decide (";
   (* Some binary operations have a special notation depending on the backend *)
   (match (backend (), binop) with
   | HOL4, (Eq _ | Ne _)
@@ -689,7 +712,22 @@ let extract_binop (span : Meta.span) (ctx : extraction_ctx)
       extract_expr ~inside:true arg0;
       F.pp_print_space fmt ();
       extract_expr ~inside:true arg1);
+  if wrap_decide then F.pp_print_string fmt ")";
   if inside then F.pp_print_string fmt ")"
+
+(** If [e] is (an application of) a comparison operator whose Lean extraction
+    goes through [Prop] (i.e. [=], [<], [<=], [>=], [>] — note that [!=] is
+    excluded as it is already [Bool]-valued), return the operator and its two
+    arguments. This is used to detect comparisons that sit directly in the
+    scrutinee position of an [if], where we want to keep the [Prop] form rather
+    than wrapping them in [decide (...)]. *)
+let opt_destruct_prop_comparison (e : texpr) : (binop * texpr * texpr) option =
+  match PureUtils.opt_destruct_function_call e with
+  | Some (Binop binop, _, [ arg0; arg1 ]) -> (
+      match binop with
+      | Eq _ | Lt _ | Le _ | Ge _ | Gt _ -> Some (binop, arg0, arg1)
+      | _ -> None)
+  | _ -> None
 
 (** [inside]: controls the introduction of parentheses. See [extract_ty]
 
@@ -1477,7 +1515,17 @@ and extract_Switch (span : Meta.span) (ctx : extraction_ctx) (fmt : F.formatter)
       if backend () = Lean && ctx.use_dep_ite then F.pp_print_string fmt " h:";
       F.pp_print_space fmt ();
       let scrut_inside = PureUtils.texpr_requires_parentheses span scrut in
-      extract_texpr span ctx fmt ~inside:scrut_inside ~inside_do:false scrut;
+      (* When targeting Lean, if the scrutinee is directly a comparison we keep
+         its [Prop] form (rather than the [Bool] [decide (...)] form emitted in
+         value positions): [if] accepts a [Prop] scrutinee through [Decidable],
+         and this preserves [h : a < b] for dependent-if. *)
+      (match opt_destruct_prop_comparison scrut with
+      | Some (binop, arg0, arg1) when backend () = Lean ->
+          extract_binop span ctx
+            (extract_texpr span ctx fmt ~inside_do:false)
+            fmt ~inside:scrut_inside ~comparison_as_prop:true binop arg0 arg1
+      | _ ->
+          extract_texpr span ctx fmt ~inside:scrut_inside ~inside_do:false scrut);
       (* Close the box for the [if e] *)
       F.pp_close_box fmt ();
 

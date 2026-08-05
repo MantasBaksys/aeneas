@@ -134,7 +134,7 @@ def read_global_loop_loop (b : Bool) : Result Unit := do
 /-- [loops_issues::read_global_loop]:
     Source: 'tests/src/loops-issues.rs', lines 46:0-49:1 -/
 def read_global_loop (b : Bool) (n_rows : Std.Usize) : Result Unit := do
-  massert (n_rows <= MAX_NROWS)
+  massert (decide (n_rows <= MAX_NROWS))
   read_global_loop_loop b
 
 /-- [loops_issues::mut_loop_len]: loop body 0:
@@ -148,7 +148,7 @@ def mut_loop_len_loop.body
   then
     let s ← lift (Array.to_slice buf)
     let i := Slice.len s
-    massert (0#usize <= i)
+    massert (decide (0#usize <= i))
     ok (cont true)
   else ok (done ())
 

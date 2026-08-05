@@ -28,20 +28,20 @@ def test_enumerate_slice : Result Unit := do
     core.iter.adapters.enumerate.IteratorEnumerate.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it
   let (i0, x0) ← core.option.Option.unwrap o
-  massert (i0 = 0#usize)
-  massert (x0 = 10#u32)
+  massert (decide (i0 = 0#usize))
+  massert (decide (x0 = 10#u32))
   let (o1, it2) ←
     core.iter.adapters.enumerate.IteratorEnumerate.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it1
   let (i1, x1) ← core.option.Option.unwrap o1
-  massert (i1 = 1#usize)
-  massert (x1 = 20#u32)
+  massert (decide (i1 = 1#usize))
+  massert (decide (x1 = 20#u32))
   let (o2, it3) ←
     core.iter.adapters.enumerate.IteratorEnumerate.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it2
   let (i2, x2) ← core.option.Option.unwrap o2
-  massert (i2 = 2#usize)
-  massert (x2 = 30#u32)
+  massert (decide (i2 = 2#usize))
+  massert (decide (x2 = 30#u32))
   let (o3, _) ←
     core.iter.adapters.enumerate.IteratorEnumerate.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it3
@@ -84,12 +84,12 @@ def test_take_2 : Result Unit := do
     core.iter.adapters.take.IteratorTake.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it
   let i1 ← core.option.Option.unwrap o
-  massert (i1 = 10#u32)
+  massert (decide (i1 = 10#u32))
   let (o1, it2) ←
     core.iter.adapters.take.IteratorTake.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it1
   let i2 ← core.option.Option.unwrap o1
-  massert (i2 = 20#u32)
+  massert (decide (i2 = 20#u32))
   let (o2, _) ←
     core.iter.adapters.take.IteratorTake.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it2
@@ -131,17 +131,17 @@ def test_take_more_than_available : Result Unit := do
     core.iter.adapters.take.IteratorTake.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it
   let i1 ← core.option.Option.unwrap o
-  massert (i1 = 1#u32)
+  massert (decide (i1 = 1#u32))
   let (o1, it2) ←
     core.iter.adapters.take.IteratorTake.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it1
   let i2 ← core.option.Option.unwrap o1
-  massert (i2 = 2#u32)
+  massert (decide (i2 = 2#u32))
   let (o2, it3) ←
     core.iter.adapters.take.IteratorTake.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it2
   let i3 ← core.option.Option.unwrap o2
-  massert (i3 = 3#u32)
+  massert (decide (i3 = 3#u32))
   let (o3, _) ←
     core.iter.adapters.take.IteratorTake.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it3
@@ -181,7 +181,7 @@ def test_range_u8_loop
     Visibility: public -/
 def test_range_u8 : Result Unit := do
   let count ← test_range_u8_loop { start := 0#u8, «end» := 5#u8 } 0#u32
-  massert (count = 5#u32)
+  massert (decide (count = 5#u32))
 
 /- Unit test for [iter_adapters::test_range_u8] -/
 #assert (test_range_u8 == ok ())
@@ -218,7 +218,7 @@ def test_range_u16_loop
     Visibility: public -/
 def test_range_u16 : Result Unit := do
   let count ← test_range_u16_loop { start := 0#u16, «end» := 4#u16 } 0#u32
-  massert (count = 4#u32)
+  massert (decide (count = 4#u32))
 
 /- Unit test for [iter_adapters::test_range_u16] -/
 #assert (test_range_u16 == ok ())
@@ -255,7 +255,7 @@ def test_range_u32_loop
     Visibility: public -/
 def test_range_u32 : Result Unit := do
   let count ← test_range_u32_loop { start := 0#u32, «end» := 3#u32 } 0#u32
-  massert (count = 3#u32)
+  massert (decide (count = 3#u32))
 
 /- Unit test for [iter_adapters::test_range_u32] -/
 #assert (test_range_u32 == ok ())
@@ -292,7 +292,7 @@ def test_range_u64_loop
     Visibility: public -/
 def test_range_u64 : Result Unit := do
   let count ← test_range_u64_loop { start := 0#u64, «end» := 4#u64 } 0#u64
-  massert (count = 4#u64)
+  massert (decide (count = 4#u64))
 
 /- Unit test for [iter_adapters::test_range_u64] -/
 #assert (test_range_u64 == ok ())
@@ -331,7 +331,7 @@ def test_range_usize_loop
 def test_range_usize : Result Unit := do
   let count ←
     test_range_usize_loop { start := 0#usize, «end» := 5#usize } 0#usize
-  massert (count = 5#usize)
+  massert (decide (count = 5#usize))
 
 /- Unit test for [iter_adapters::test_range_usize] -/
 #assert (test_range_usize == ok ())
@@ -366,7 +366,7 @@ def test_range_empty_loop
     Visibility: public -/
 def test_range_empty : Result Unit := do
   let count ← test_range_empty_loop { start := 5#u8, «end» := 5#u8 } 0#u32
-  massert (count = 0#u32)
+  massert (decide (count = 0#u32))
 
 /- Unit test for [iter_adapters::test_range_empty] -/
 #assert (test_range_empty == ok ())
@@ -380,13 +380,13 @@ def test_array_into_iter : Result Unit := do
   let it ← core.slice.Slice.iter s
   let (o, it1) ← core.slice.iter.IteratorSliceIter.next it
   let i ← core.option.Option.unwrap o
-  massert (i = 10#u32)
+  massert (decide (i = 10#u32))
   let (o1, it2) ← core.slice.iter.IteratorSliceIter.next it1
   let i1 ← core.option.Option.unwrap o1
-  massert (i1 = 20#u32)
+  massert (decide (i1 = 20#u32))
   let (o2, it3) ← core.slice.iter.IteratorSliceIter.next it2
   let i2 ← core.option.Option.unwrap o2
-  massert (i2 = 30#u32)
+  massert (decide (i2 = 30#u32))
   let (o3, _) ← core.slice.iter.IteratorSliceIter.next it3
   let b := core.option.Option.is_none o3
   massert b
@@ -403,16 +403,16 @@ def test_slice_into_iter : Result Unit := do
   let it ← core.slice.Slice.iter s
   let (o, it1) ← core.slice.iter.IteratorSliceIter.next it
   let i ← core.option.Option.unwrap o
-  massert (i = 1#u32)
+  massert (decide (i = 1#u32))
   let (o1, it2) ← core.slice.iter.IteratorSliceIter.next it1
   let i1 ← core.option.Option.unwrap o1
-  massert (i1 = 2#u32)
+  massert (decide (i1 = 2#u32))
   let (o2, it3) ← core.slice.iter.IteratorSliceIter.next it2
   let i2 ← core.option.Option.unwrap o2
-  massert (i2 = 3#u32)
+  massert (decide (i2 = 3#u32))
   let (o3, it4) ← core.slice.iter.IteratorSliceIter.next it3
   let i3 ← core.option.Option.unwrap o3
-  massert (i3 = 4#u32)
+  massert (decide (i3 = 4#u32))
   let (o4, _) ← core.slice.iter.IteratorSliceIter.next it4
   let b := core.option.Option.is_none o4
   massert b
@@ -440,15 +440,15 @@ def test_enumerate_step_by : Result Unit := do
       (core.iter.traits.iterator.IteratorEnumerate
       (core.iter.traits.iterator.IteratorSliceIter Std.U32)) it
   let (i0, x0) ← core.option.Option.unwrap o
-  massert (i0 = 0#usize)
-  massert (x0 = 10#u32)
+  massert (decide (i0 = 0#usize))
+  massert (decide (x0 = 10#u32))
   let (o1, _) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorEnumerate
       (core.iter.traits.iterator.IteratorSliceIter Std.U32)) it1
   let (i1, x1) ← core.option.Option.unwrap o1
-  massert (i1 = 2#usize)
-  massert (x1 = 30#u32)
+  massert (decide (i1 = 2#usize))
+  massert (decide (x1 = 30#u32))
 
 /- Unit test for [iter_adapters::test_enumerate_step_by] -/
 #assert (test_enumerate_step_by == ok ())
@@ -473,15 +473,15 @@ def test_enumerate_take : Result Unit := do
       (core.iter.traits.iterator.IteratorEnumerate
       (core.iter.traits.iterator.IteratorSliceIter Std.U32)) it
   let (i0, x0) ← core.option.Option.unwrap o
-  massert (i0 = 0#usize)
-  massert (x0 = 10#u32)
+  massert (decide (i0 = 0#usize))
+  massert (decide (x0 = 10#u32))
   let (o1, it2) ←
     core.iter.adapters.take.IteratorTake.next
       (core.iter.traits.iterator.IteratorEnumerate
       (core.iter.traits.iterator.IteratorSliceIter Std.U32)) it1
   let (i1, x1) ← core.option.Option.unwrap o1
-  massert (i1 = 1#usize)
-  massert (x1 = 20#u32)
+  massert (decide (i1 = 1#usize))
+  massert (decide (x1 = 20#u32))
   let (o2, _) ←
     core.iter.adapters.take.IteratorTake.next
       (core.iter.traits.iterator.IteratorEnumerate
@@ -505,7 +505,7 @@ def test_take_exhausted_then_next : Result Unit := do
     core.iter.adapters.take.IteratorTake.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it
   let i1 ← core.option.Option.unwrap o
-  massert (i1 = 42#u32)
+  massert (decide (i1 = 42#u32))
   let (o1, it2) ←
     core.iter.adapters.take.IteratorTake.next
       (core.iter.traits.iterator.IteratorSliceIter Std.U32) it1
@@ -528,7 +528,7 @@ def test_range_single_element : Result Unit := do
     core.iter.range.IteratorRange.next core.iter.range.StepU8
       { start := 0#u8, «end» := 1#u8 }
   let i ← core.option.Option.unwrap o
-  massert (i = 0#u8)
+  massert (decide (i = 0#u8))
   let (o1, _) ← core.iter.range.IteratorRange.next core.iter.range.StepU8 it
   let b := core.option.Option.is_none o1
   massert b
@@ -544,7 +544,7 @@ def test_range_u8_near_max : Result Unit := do
     core.iter.range.IteratorRange.next core.iter.range.StepU8
       { start := 254#u8, «end» := 255#u8 }
   let i ← core.option.Option.unwrap o
-  massert (i = 254#u8)
+  massert (decide (i = 254#u8))
   let (o1, _) ← core.iter.range.IteratorRange.next core.iter.range.StepU8 it
   let b := core.option.Option.is_none o1
   massert b
@@ -586,15 +586,15 @@ def test_range_u16_boundary : Result Unit := do
     core.iter.range.IteratorRange.next core.iter.range.StepU16
       { start := 0#u16, «end» := 3#u16 }
   let i ← core.option.Option.unwrap o
-  massert (i = 0#u16)
+  massert (decide (i = 0#u16))
   let (o1, it1) ←
     core.iter.range.IteratorRange.next core.iter.range.StepU16 it
   let i1 ← core.option.Option.unwrap o1
-  massert (i1 = 1#u16)
+  massert (decide (i1 = 1#u16))
   let (o2, it2) ←
     core.iter.range.IteratorRange.next core.iter.range.StepU16 it1
   let i2 ← core.option.Option.unwrap o2
-  massert (i2 = 2#u16)
+  massert (decide (i2 = 2#u16))
   let (o3, _) ←
     core.iter.range.IteratorRange.next core.iter.range.StepU16 it2
   let b := core.option.Option.is_none o3
@@ -611,11 +611,11 @@ def test_range_u32_boundary : Result Unit := do
     core.iter.range.IteratorRange.next core.iter.range.StepU32
       { start := 0#u32, «end» := 2#u32 }
   let i ← core.option.Option.unwrap o
-  massert (i = 0#u32)
+  massert (decide (i = 0#u32))
   let (o1, it1) ←
     core.iter.range.IteratorRange.next core.iter.range.StepU32 it
   let i1 ← core.option.Option.unwrap o1
-  massert (i1 = 1#u32)
+  massert (decide (i1 = 1#u32))
   let (o2, _) ←
     core.iter.range.IteratorRange.next core.iter.range.StepU32 it1
   let b := core.option.Option.is_none o2
@@ -632,15 +632,15 @@ def test_range_u64_boundary : Result Unit := do
     core.iter.range.IteratorRange.next core.iter.range.StepU64
       { start := 100#u64, «end» := 103#u64 }
   let i ← core.option.Option.unwrap o
-  massert (i = 100#u64)
+  massert (decide (i = 100#u64))
   let (o1, it1) ←
     core.iter.range.IteratorRange.next core.iter.range.StepU64 it
   let i1 ← core.option.Option.unwrap o1
-  massert (i1 = 101#u64)
+  massert (decide (i1 = 101#u64))
   let (o2, it2) ←
     core.iter.range.IteratorRange.next core.iter.range.StepU64 it1
   let i2 ← core.option.Option.unwrap o2
-  massert (i2 = 102#u64)
+  massert (decide (i2 = 102#u64))
   let (o3, _) ←
     core.iter.range.IteratorRange.next core.iter.range.StepU64 it2
   let b := core.option.Option.is_none o3
@@ -674,7 +674,7 @@ def test_step_by_larger_than_range : Result Unit := do
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it
   let i ← core.option.Option.unwrap o
-  massert (i = 0#u8)
+  massert (decide (i = 0#u8))
   let (o1, _) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it1
@@ -696,7 +696,7 @@ def test_step_by_exact_range : Result Unit := do
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it
   let i ← core.option.Option.unwrap o
-  massert (i = 0#u8)
+  massert (decide (i = 0#u8))
   let (o1, _) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it1
@@ -718,22 +718,22 @@ def test_step_by_one : Result Unit := do
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it
   let i ← core.option.Option.unwrap o
-  massert (i = 0#u8)
+  massert (decide (i = 0#u8))
   let (o1, it2) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it1
   let i1 ← core.option.Option.unwrap o1
-  massert (i1 = 1#u8)
+  massert (decide (i1 = 1#u8))
   let (o2, it3) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it2
   let i2 ← core.option.Option.unwrap o2
-  massert (i2 = 2#u8)
+  massert (decide (i2 = 2#u8))
   let (o3, it4) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it3
   let i3 ← core.option.Option.unwrap o3
-  massert (i3 = 3#u8)
+  massert (decide (i3 = 3#u8))
   let (o4, _) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it4
@@ -772,17 +772,17 @@ def test_step_by_odd_range : Result Unit := do
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it
   let i ← core.option.Option.unwrap o
-  massert (i = 0#u8)
+  massert (decide (i = 0#u8))
   let (o1, it2) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it1
   let i1 ← core.option.Option.unwrap o1
-  massert (i1 = 2#u8)
+  massert (decide (i1 = 2#u8))
   let (o2, it3) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it2
   let i2 ← core.option.Option.unwrap o2
-  massert (i2 = 4#u8)
+  massert (decide (i2 = 4#u8))
   let (o3, _) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it3
@@ -804,17 +804,17 @@ def test_step_by_u8_near_max : Result Unit := do
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it
   let i ← core.option.Option.unwrap o
-  massert (i = 250#u8)
+  massert (decide (i = 250#u8))
   let (o1, it2) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it1
   let i1 ← core.option.Option.unwrap o1
-  massert (i1 = 252#u8)
+  massert (decide (i1 = 252#u8))
   let (o2, it3) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it2
   let i2 ← core.option.Option.unwrap o2
-  massert (i2 = 254#u8)
+  massert (decide (i2 = 254#u8))
   let (o3, _) ←
     core.iter.adapters.step_by.IteratorStepBy.next
       (core.iter.traits.iterator.IteratorRange core.iter.range.StepU8) it3
@@ -833,17 +833,17 @@ def test_range_inclusive_basic : Result Unit := do
     core.ops.range.RangeInclusive.Insts.CoreIterTraitsIteratorIterator.next
       core.iter.range.StepUsize it
   let i ← core.option.Option.unwrap o
-  massert (i = 1#usize)
+  massert (decide (i = 1#usize))
   let (o1, it2) ←
     core.ops.range.RangeInclusive.Insts.CoreIterTraitsIteratorIterator.next
       core.iter.range.StepUsize it1
   let i1 ← core.option.Option.unwrap o1
-  massert (i1 = 2#usize)
+  massert (decide (i1 = 2#usize))
   let (o2, it3) ←
     core.ops.range.RangeInclusive.Insts.CoreIterTraitsIteratorIterator.next
       core.iter.range.StepUsize it2
   let i2 ← core.option.Option.unwrap o2
-  massert (i2 = 3#usize)
+  massert (decide (i2 = 3#usize))
   let (o3, _) ←
     core.ops.range.RangeInclusive.Insts.CoreIterTraitsIteratorIterator.next
       core.iter.range.StepUsize it3
@@ -862,7 +862,7 @@ def test_range_inclusive_singleton : Result Unit := do
     core.ops.range.RangeInclusive.Insts.CoreIterTraitsIteratorIterator.next
       core.iter.range.StepUsize it
   let i ← core.option.Option.unwrap o
-  massert (i = 7#usize)
+  massert (decide (i = 7#usize))
   let (o1, _) ←
     core.ops.range.RangeInclusive.Insts.CoreIterTraitsIteratorIterator.next
       core.iter.range.StepUsize it1

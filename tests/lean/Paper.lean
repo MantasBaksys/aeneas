@@ -25,7 +25,7 @@ def ref_incr (x : Std.I32) : Result Std.I32 := do
     Visibility: public -/
 def test_incr : Result Unit := do
   let x ← ref_incr 0#i32
-  massert (x = 1#i32)
+  massert (decide (x = 1#i32))
 
 /- Unit test for [paper::test_incr] -/
 #assert (test_incr == ok ())
@@ -47,10 +47,10 @@ def choose
 def test_choose : Result Unit := do
   let (z, choose_back) ← choose true 0#i32 0#i32
   let z1 ← z + 1#i32
-  massert (z1 = 1#i32)
+  massert (decide (z1 = 1#i32))
   let (x, y) := choose_back z1
-  massert (x = 1#i32)
-  massert (y = 0#i32)
+  massert (decide (x = 1#i32))
+  massert (decide (y = 0#i32))
 
 /- Unit test for [paper::test_choose] -/
 #assert (test_choose == ok ())
@@ -102,7 +102,7 @@ def test_nth : Result Unit := do
   let x1 ← x + 1#i32
   let l := list_nth_mut_back x1
   let i ← sum l
-  massert (i = 7#i32)
+  massert (decide (i = 7#i32))
 
 /- Unit test for [paper::test_nth] -/
 #assert (test_nth == ok ())

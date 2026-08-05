@@ -79,6 +79,6 @@ def main : Result Unit := do
   let _ ←
     Trait.provided_method.default YesOverride.Insts.Defaulted_methodTrait ()
   let n ← core.cmp.Ord.min.trait_default core.cmp.OrdI32 10#i32 1#i32
-  massert (n = 1#i32)
+  massert (decide (n = 1#i32))
 
 end defaulted_method

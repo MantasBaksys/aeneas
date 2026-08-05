@@ -498,7 +498,7 @@ def sum2_loop
 def sum2 (s : Slice Std.U32) (s2 : Slice Std.U32) : Result Std.U32 := do
   let i := Slice.len s
   let i1 := Slice.len s2
-  massert (i = i1)
+  massert (decide (i = i1))
   sum2_loop s s2 0#u32 0#usize
 
 /-- [arrays::f0]:
