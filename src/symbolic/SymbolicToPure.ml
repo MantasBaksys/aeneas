@@ -185,6 +185,24 @@ let translate_trait_method (ctx : Contexts.decls_ctx) (span : span option)
         bound_method;
   }
 
+(* The extraction names of the builtin `Fn`/`FnMut`/`FnOnce` traits. *)
+let fn_trait_extract_names =
+  [
+    "core.ops.function.Fn";
+    "core.ops.function.FnMut";
+    "core.ops.function.FnOnce";
+  ]
+
+(* Whether [name] is a monomorphized copy (it ends with a [PeInstantiated]
+   element) of one of the builtin `Fn*` traits identified by [info]. *)
+let is_instantiated_fn_trait (info : Pure.builtin_trait_decl_info)
+    (name : Types.name) : bool =
+  List.mem info.extract_name fn_trait_extract_names
+  &&
+  match List.rev name with
+  | Types.PeInstantiated _ :: _ -> true
+  | _ -> false
+
 let translate_trait_decl (ctx : Contexts.decls_ctx) (trait_decl : A.trait_decl)
     : trait_decl =
   let {
@@ -216,6 +234,23 @@ let translate_trait_decl (ctx : Contexts.decls_ctx) (trait_decl : A.trait_decl)
   let builtin_info =
     match_name_find_opt ctx trait_decl.item_meta.name
       (ExtractBuiltin.builtin_trait_decls_map ())
+  in
+  (* Monomorphized copies of the `Fn`/`FnMut`/`FnOnce` traits (produced by
+     Charon's `--monomorphize-mut`) match the builtin `Fn*` patterns, but they
+     are *not* instances of the fixed-arity builtin Lean model: after
+     specialization the `Args` tuple is split into several trait parameters, so
+     the specialized copy carries more type arguments than the builtin
+     structure accepts. Such a copy is, after specialization, an ordinary trait
+     declaration; we emit it as one (dropping the builtin info) so that Aeneas
+     generates a structure with the correct arity and a name disambiguated by
+     the instantiation (see [NameMatcher.path_elem_with_generic_args_to_pattern]).
+     Only the specialized copies are affected; the generic `Fn*` traits keep
+     their builtin model. *)
+  let builtin_info =
+    match builtin_info with
+    | Some info when is_instantiated_fn_trait info trait_decl.item_meta.name ->
+        None
+    | _ -> builtin_info
   in
   if (not (T.AssocTypeId.Map.is_empty types)) && builtin_info = None then
     (* Most associated types are removed by Charon's `--remove-associated-types`. *)
