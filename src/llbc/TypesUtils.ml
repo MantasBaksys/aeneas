@@ -40,8 +40,13 @@ let ty_regions (ty : ty) : RegionId.Set.t =
       (* Function-item and function-pointer types are zero-sized and carry no
          borrows; their (possibly higher-ranked, i.e. bound) regions are not
          value regions. Skip them, exactly like [TDynTrait]. *)
-      method! visit_TFnDef _ _ = ()
-      method! visit_TFnPtr _ _ = ()
+      method! visit_TFnDef env fn =
+        if Config.type_analysis_ignore_fn_types then ()
+        else super#visit_TFnDef env fn
+
+      method! visit_TFnPtr env sg =
+        if Config.type_analysis_ignore_fn_types then ()
+        else super#visit_TFnPtr env sg
     end
   in
   (* Explore the type *)
@@ -71,8 +76,13 @@ let ty_has_regions_in_pred (pred : region -> bool) (ty : ty) : bool =
          projections into abstractions. Skip them, exactly like [TDynTrait]:
          descending into a higher-ranked binder would otherwise call [pred] on a
          bound region, which [region_in_set] rejects. *)
-      method! visit_TFnDef _ _ = ()
-      method! visit_TFnPtr _ _ = ()
+      method! visit_TFnDef env fn =
+        if Config.type_analysis_ignore_fn_types then ()
+        else super#visit_TFnDef env fn
+
+      method! visit_TFnPtr env sg =
+        if Config.type_analysis_ignore_fn_types then ()
+        else super#visit_TFnPtr env sg
     end
   in
   try
@@ -368,8 +378,13 @@ let raise_if_not_rty_visitor =
        case they legitimately contain bound regions. Such types are region
        types nonetheless: we treat them as region-opaque here, exactly like
        [TDynTrait] above. *)
-    method! visit_TFnDef _ _ = ()
-    method! visit_TFnPtr _ _ = ()
+    method! visit_TFnDef env fn =
+      if Config.type_analysis_ignore_fn_types then ()
+      else super#visit_TFnDef env fn
+
+    method! visit_TFnPtr env sg =
+      if Config.type_analysis_ignore_fn_types then ()
+      else super#visit_TFnPtr env sg
   end
 
 (** Return [true] if the type is a region type (i.e., it doesn't contain erased

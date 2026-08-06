@@ -482,7 +482,13 @@ let rec compare_rtys ?(allow_erased = false) (span : Meta.span) (ctx : eval_ctx)
   | TFnDef _, TFnDef _ | TFnPtr _, TFnPtr _ ->
       (* Function-item and function-pointer types are zero-sized and carry no
          borrows, so their projections never intersect: return [default], like
-         [TDynTrait]. *)
+         [TDynTrait] above.
+
+         TODO: like for [TDynTrait], this ignores the regions inside the type.
+         That is sound as long as such a value holds no loan, which is the case
+         today. If we ever project through function types, this needs to compare
+         their regions. *)
+      [%cassert] span (not Config.use_fn_type_regions) "Unimplemented";
       default
   | _ ->
       [%craise] span

@@ -465,7 +465,14 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
            generic arguments) to gather borrow information, ignoring the
            regions at the boundary (both those bound by the [TFnDef] binder and
            those appearing among the generic arguments): a zero-sized value has
-           no mutable borrows of its own. *)
+           no mutable borrows of its own.
+
+           See the [TFnDef] case of
+           [RegionsHierarchy.compute_regions_hierarchy_for_sig] for why the
+           stronger check that the previous TODO here asked for - opening the
+           binders and verifying that no signature-level region is outlived by a
+           locally bound one - cannot currently be expressed, and for what would
+           be needed to express it. *)
         List.fold_left
           (fun ty_info ty -> analyze span expl_info ty_info ty)
           ty_info generics.types
