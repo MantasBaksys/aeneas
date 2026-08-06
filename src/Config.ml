@@ -502,6 +502,28 @@ let type_analysis_ignore_dyn = true
     be updated. *)
 let use_dyn_regions = false
 
+(** When analyzing types, we ignore the regions of function-item ([TFnDef]) and
+    function-pointer ([TFnPtr]) types, in the same way and for the same reason
+    as we ignore dynamic traits (see [type_analysis_ignore_dyn]).
+
+    Such a type is a zero-sized value carrying no borrows, so the regions
+    appearing in it - including those bound by its own binder, when it is
+    higher-ranked - do not induce outlives constraints on the value itself and
+    do not correspond to loans that could be projected into an abstraction.
+
+    This is an approximation: we do not check that the regions bound by the
+    binder are unrelated to the regions of the enclosing signature. See the
+    comment on the [TFnDef] case of
+    [RegionsHierarchy.compute_regions_hierarchy_for_sig] for why that check
+    cannot currently be expressed. As for dynamic traits, we guard all the
+    checks with this boolean so that it is easy to activate them. *)
+let type_analysis_ignore_fn_types = true
+
+(** We currently ignore the regions inside function-item and function-pointer
+    types: once we take them into account, remove this boolean: this will reveal
+    the places that need to be updated. *)
+let use_fn_type_regions = false
+
 (** When analyzing an opaque type about which we have no information, should we
     consider its regions as being used for mutable references or not? *)
 let opaque_types_have_mut_regions_by_default = false

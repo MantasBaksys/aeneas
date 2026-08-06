@@ -178,7 +178,22 @@ let compute_regions_hierarchy_for_sig (span : Meta.span option) (crate : crate)
            outer regions are irrelevant here. We simply explore the generic
            arguments to pick up any relations that might appear between
            signature-level regions nested inside a generic type, ignoring the
-           outer regions - exactly as we do for [TFnPtr] just above. *)
+           outer regions - exactly as we do for [TFnPtr] just above.
+
+           This used to reject any [TFnDef] mentioning a region at all, with a
+           TODO suggesting that we should instead open the binders and check
+           that no region bound at the level of the signature is outlived by a
+           locally bound region. That check cannot currently be expressed: a
+           [region_binder] carries only its [binder_regions], a [region_param]
+           carries no bounds, and the [fun_sig] under a [TFnPtr] has no
+           [generics] field at all, so there is nowhere for an outlives relation
+           between a locally bound region and a signature-level one to be
+           recorded. For a [TFnDef] naming a regular function one could look the
+           callee up in the crate and read its [signature.generics.regions_outlive],
+           but that is not possible for a trait method, for an opaque function,
+           or at any of the other places where we make the same approximation
+           (see [Config.type_analysis_ignore_fn_types]). Expressing the check
+           would first require extending the Charon AST. *)
         explore_generics [] generics
     | TDynTrait _ ->
         [%cassert_opt_span] span Config.type_analysis_ignore_dyn "Unimplemented"
