@@ -1775,6 +1775,15 @@ let default_fun_suffix (num_loops : int) (loop_id : (LoopId.id * bool) option)
   in
   loop_suffix ^ body_suffix
 
+(** Suffix appended to the name of the constructor function that Charon
+    generates when an enum variant or a tuple struct is used as a function
+    value. Without it the function would shadow the constructor introduced by
+    the type definition (see {!fun_name_shadows_its_constructor}). *)
+let constructor_fun_suffix () : string =
+  match Config.backend () with
+  | Lean -> ".ctor"
+  | FStar | Coq | HOL4 -> "_ctor"
+
 (** Compute the name of a regular (non-builtin) function.
 
     In practice we need to preprocess the name *before* giving it to this
@@ -2576,6 +2585,63 @@ let ctx_add_termination_measure (def : fun_decl) (ctx : extraction_ctx) :
     name ctx
 
 (* TODO: move to Extract *)
+(** Detect whether a function is the "constructor function" of an enum variant
+    or of a tuple struct.
+
+    When an enum variant or a tuple struct is used as a first-class function
+    value (e.g. [o.map(E::A)] or [o.map(S)]), Charon emits a function item whose
+    name is *exactly* the name of the variant (resp. of the type). Extracting a
+    monadic wrapper under that name clashes with the constructor introduced by
+    the type definition itself, e.g. in Lean:
+    {[
+      inductive E where
+      | A : Usize -> E          -- from Types.lean
+
+      def E.A (i : Usize) : Result E := ok (E.A i)   -- clash!
+    ]}
+    Such a function is compiler-generated, so the user cannot work around the
+    clash with [#[aeneas::rename]]: we disambiguate it ourselves instead.
+
+    We identify the situation by the fact that the name computed for the
+    function is already bound to the type (resp. the variant) whose LLBC name is
+    exactly the LLBC name of the function. Two distinct user-written items can
+    never satisfy this, so the test does not fire on genuine name clashes, which
+    we still want to report to the user. *)
+let fun_name_shadows_its_constructor (def : fun_decl) (name : string)
+    (ctx : extraction_ctx) : bool =
+  let type_decl_name (type_id : type_id) : llbc_name option =
+    match type_id with
+    | TAdtId type_decl_id -> (
+        match Pure.TypeDeclId.Map.find_opt type_decl_id ctx.trans_types with
+        | Some tdef -> Some tdef.item_meta.name
+        | None -> None)
+    | TTuple | TBuiltin _ -> None
+  in
+  match names_map_get_id_from_name name ctx.names_maps.names_map with
+  | Some ((TypeId type_id | StructId type_id), _) ->
+      (* Tuple struct constructor: the function has the very name of the type *)
+      type_decl_name type_id = Some def.item_meta.name
+  | Some (VariantId (type_id, variant_id), _) -> (
+      (* Enum variant constructor: the function's name is the type's name
+         extended with the variant's name *)
+      match (type_id, type_decl_name type_id) with
+      | TAdtId type_decl_id, Some tname -> (
+          match Pure.TypeDeclId.Map.find_opt type_decl_id ctx.trans_types with
+          | Some { kind = Enum variants; _ } -> (
+              match
+                List.nth_opt variants (Pure.VariantId.to_int variant_id)
+              with
+              | Some variant -> (
+                  match List.rev def.item_meta.name with
+                  | T.PeIdent (last, _) :: rev_prefix ->
+                      last = variant.variant_name
+                      && List.rev rev_prefix = tname
+                  | _ -> false)
+              | None -> false)
+          | _ -> false)
+      | _ -> false)
+  | _ -> false
+
 let ctx_add_fun_decl (def : fun_decl) (ctx : extraction_ctx) : extraction_ctx =
   (* A global initializer body is not a function: it is registered as a global
      (see [ctx_add_global_decl]) and inlined into the global definition, so it
@@ -2587,6 +2653,14 @@ let ctx_add_fun_decl (def : fun_decl) (ctx : extraction_ctx) : extraction_ctx =
     let def_id = def.def_id in
     (* Add the function name *)
     let def_name = ctx_compute_fun_name def false ctx in
+    (* Disambiguate the constructor functions that Charon generates when an enum
+       variant or a tuple struct is used as a function value: their name is the
+       name of the variant/type they build, which is already taken. *)
+    let def_name =
+      if fun_name_shadows_its_constructor def def_name ctx then
+        def_name ^ constructor_fun_suffix ()
+      else def_name
+    in
     let fun_id = (Pure.FunId (FRegular def_id), def.loop_id) in
     ctx_add def.item_meta.span (FunId (FromLlbc fun_id)) def_name ctx
 
