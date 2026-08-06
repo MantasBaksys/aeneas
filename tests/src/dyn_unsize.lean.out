@@ -1,0 +1,5 @@
+[[92mInfo[39m ] Imported: tests/llbc/dyn_unsize.llbc
+[[91mError[39m] Unsized cast between dynamic traits: unimplemented case
+Source: 'tests/src/dyn_unsize.rs', lines 19:4-19:5
+Compiler source: interp/InterpExpressions.ml, line 941
+

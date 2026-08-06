@@ -1545,7 +1545,7 @@ let lookup_aproj_loans_opt (span : Meta.span) (abs_id : AbsId.id)
 let lookup_aproj_loans (span : Meta.span) (abs_id : AbsId.id)
     (sv_id : symbolic_value_id) (ctx : eval_ctx) :
     aproj_loans * eproj_loans option =
-  Option.get (lookup_aproj_loans_opt span abs_id sv_id ctx)
+  [%silent_unwrap] span (lookup_aproj_loans_opt span abs_id sv_id ctx)
 
 (** Helper function: might break invariants.
 
@@ -1970,7 +1970,11 @@ let lookup_shared_value_opt (span : Meta.span) (env : env) (bid : BorrowId.id) :
 
 let lookup_shared_value (span : Meta.span) (env : env) (bid : BorrowId.id) :
     tvalue =
-  Option.get (lookup_shared_value_opt span env bid)
+  [%unwrap_with_span] span
+    (lookup_shared_value_opt span env bid)
+    ("Could not find the shared value corresponding to shared borrow "
+   ^ BorrowId.to_string bid
+   ^ " (this can happen when unsizing a value to a `dyn Trait` object)")
 
 let ctx_lookup_shared_value span ctx = lookup_shared_value span ctx.env
 
