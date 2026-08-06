@@ -2585,6 +2585,7 @@ let ctx_add_termination_measure (def : fun_decl) (ctx : extraction_ctx) :
     name ctx
 
 (* TODO: move to Extract *)
+
 (** Detect whether a function is the "constructor function" of an enum variant
     or of a tuple struct.
 
@@ -2634,8 +2635,7 @@ let fun_name_shadows_its_constructor (def : fun_decl) (name : string)
               | Some variant -> (
                   match List.rev def.item_meta.name with
                   | T.PeIdent (last, _) :: rev_prefix ->
-                      last = variant.variant_name
-                      && List.rev rev_prefix = tname
+                      last = variant.variant_name && List.rev rev_prefix = tname
                   | _ -> false)
               | None -> false)
           | _ -> false)
