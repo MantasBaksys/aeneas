@@ -1180,9 +1180,11 @@ let lean_builtin_trait_decls =
     (* file: "Aeneas/Std/Core/Default.lean", line: 5 *)
     mk_trait_decl "core::default::Default" "core.default.Default"
       ~methods:[ ("default", "default") ];
-    (* file: "Aeneas/Std/Core/Error.lean", line: 5 *)
+    (* file: "Aeneas/Std/Core/Error.lean", line: 14 *)
     mk_trait_decl "core::error::Error" "core.error.Error"
-      ~parent_clauses:[ "fmtDebugInst"; "fmtDisplayInst" ];
+      ~parent_clauses:[ "fmtDebugInst"; "fmtDisplayInst" ]
+      ~methods:[ ("description", "description") ]
+      ~default_methods:[ "description" ];
     (* file: "Aeneas/Std/Core/Fmt.lean", line: 15 *)
     mk_trait_decl "core::fmt::Debug" "core.fmt.Debug"
       ~methods:[ ("fmt", "fmt") ];
