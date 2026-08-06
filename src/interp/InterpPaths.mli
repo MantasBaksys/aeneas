@@ -78,6 +78,19 @@ val compute_expanded_bottom_adt_value :
     to reinsert the value back). *)
 val drop_outer_loans_at_lplace : config -> Meta.span -> place -> cm_fun
 
+(** Preserve the *shared* loans held by the value at the given place, if any, by
+    moving that value into a dummy variable and replacing it with ⊥.
+
+    This models the situation where the storage of a local dies while shared
+    borrows of it are still live, which Rust allows only because rustc promoted
+    the borrowed value to an anonymous ['static] constant. Ending the loans
+    instead would turn the outstanding borrows into ⊥.
+
+    Does nothing if the value holds no outer loan, or holds an outer mutable
+    loan (a mutable borrow may not outlive the storage it points to). *)
+val preserve_escaping_shared_loans_at_lplace :
+  Meta.span -> place -> eval_ctx -> eval_ctx
+
 (** End the loans at a given place: read the value, if it contains a loan, end
     this loan, repeat.
 

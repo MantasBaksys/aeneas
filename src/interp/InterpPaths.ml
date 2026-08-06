@@ -628,6 +628,116 @@ let drop_outer_loans_at_lplace (config : config) (span : Meta.span) (p : place)
   (* Return *)
   (ctx, cc)
 
+(** Collect the borrow ids reachable from a value, following the loans they
+    point to in [ctx] (a borrow may point to a loan whose borrowed value itself
+    contains borrows). *)
+let reachable_borrow_ids (span : Meta.span) (ctx : eval_ctx) (v : tvalue) :
+    BorrowId.Set.t =
+  let collect (v : tvalue) : BorrowId.Set.t =
+    let ids = ref BorrowId.Set.empty in
+    let obj =
+      object
+        inherit [_] iter_tvalue as super
+
+        method! visit_borrow_content env bc =
+          (match bc with
+          | VSharedBorrow (bid, _)
+          | VMutBorrow (bid, _)
+          | VReservedMutBorrow (bid, _) -> ids := BorrowId.Set.add bid !ids);
+          super#visit_borrow_content env bc
+      end
+    in
+    obj#visit_tvalue () v;
+    !ids
+  in
+  let collect_abs (abs_id : AbsId.id) : BorrowId.Set.t =
+    let ids = ref BorrowId.Set.empty in
+    let obj =
+      object
+        inherit [_] iter_abs as super
+
+        method! visit_borrow_id env bid =
+          ids := BorrowId.Set.add bid !ids;
+          super#visit_borrow_id env bid
+      end
+    in
+    obj#visit_abs () (ctx_lookup_abs ctx abs_id);
+    !ids
+  in
+  (* Saturate: follow each borrow to the value its loan holds.
+
+     If the loan lives inside a region abstraction, the abstraction's *inputs*
+     are reachable too: ending the loan requires ending the abstraction, which
+     in turn requires ending the borrows it holds. This is how a borrow flows
+     through a function call (e.g. `&[T; N] -> &[T]`). *)
+  let rec saturate (seen : BorrowId.Set.t) (todo : BorrowId.id list) :
+      BorrowId.Set.t =
+    match todo with
+    | [] -> seen
+    | bid :: todo ->
+        let inner =
+          match ctx_lookup_loan_opt span ek_all bid ctx with
+          | Some (_, Concrete (VSharedLoan (_, sv))) -> collect sv
+          | Some (AbsId abs_id, Abstract _) -> collect_abs abs_id
+          | Some (_, Concrete (VMutLoan _)) | Some (_, Abstract _) | None ->
+              BorrowId.Set.empty
+        in
+        let fresh = BorrowId.Set.diff inner seen in
+        saturate
+          (BorrowId.Set.union seen fresh)
+          (BorrowId.Set.elements fresh @ todo)
+  in
+  let init = collect v in
+  saturate init (BorrowId.Set.elements init)
+
+(** Preserve the *shared* loans held by the value at place [p], if any, by
+    moving that value into a dummy variable and replacing it with ⊥.
+
+    This models the situation where the storage of a local dies while shared
+    borrows of it are still live. Rust allows this only because rustc *promotes*
+    the borrowed value to an anonymous ['static] constant; Charon then inlines
+    the promoted body back into the caller, so what we see is a plain local
+    whose [storage_dead] happens while it is still borrowed (similarly,
+    [PrePasses.decompose_str_borrows] turns a [&str] literal into a frame-local
+    string plus a borrow of it, and that borrow may be returned).
+
+    Ending those loans would replace the outstanding shared borrows with ⊥,
+    which then surfaces much later as a confusing "There should be no bottoms in
+    the value" error. Instead we keep the loans alive in a dummy variable, which
+    is exactly how Aeneas already models ['static] shared loans elsewhere (see
+    [InterpStatements.push_value_to_dummy_shared_loan]).
+
+    We are deliberately conservative, and only do this when *all* of the
+    following hold, so that the usual case of ending loans upon [storage_dead]
+    is left untouched:
+    - the value holds outer loans, and all of them are *shared* (a mutable
+      borrow may not outlive the storage it points to);
+    - at least one of those loans is reachable from the value of the frame's
+      return local, i.e. the borrow genuinely escapes the frame. *)
+let preserve_escaping_shared_loans_at_lplace (span : Meta.span) (p : place)
+    (ctx : eval_ctx) : eval_ctx =
+  let access = Write in
+  let _, v = read_place span access p ctx in
+  if not (only_outer_shared_loans_in_value v) then ctx
+  else
+    (* Compute the borrows which escape through the return value *)
+    let ret_place = mk_place_from_var_id ctx span LocalId.zero in
+    let escaping =
+      match try_read_place span access ret_place ctx with
+      | Ok (_, ret_value) -> reachable_borrow_ids span ctx ret_value
+      | Error _ -> BorrowId.Set.empty
+    in
+    let loans = outer_shared_loan_ids_in_value v in
+    if BorrowId.Set.is_empty (BorrowId.Set.inter loans escaping) then ctx
+    else begin
+      [%ltrace
+        "preserving the escaping shared loans of place " ^ place_to_string ctx p
+        ^ " in a dummy variable"];
+      let ctx = write_place span access p (mk_bottom span v.ty) ctx in
+      let dummy_id = ctx.fresh_dummy_var_id () in
+      ctx_push_dummy_var ctx dummy_id v
+    end
+
 let prepare_lplace (config : config) (span : Meta.span) (p : place)
     (ctx : eval_ctx) :
     tvalue * eval_ctx * (SymbolicAst.expr -> SymbolicAst.expr) =

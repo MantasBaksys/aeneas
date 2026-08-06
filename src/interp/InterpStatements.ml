@@ -26,6 +26,10 @@ let drop_value (config : config) (span : Meta.span) (p : place) : cm_fun =
     (lazy
       ("drop_value: place: " ^ place_to_string ctx p ^ "\n- Initial context:\n"
       ^ eval_ctx_to_string ~span:(Some span) ctx));
+  (* The storage of the place dies here. If it still holds *shared* loans, the
+     borrows pointing to them may outlive it (promoted ['static] constants);
+     move them out of the way rather than ending them. *)
+  let ctx = InterpPaths.preserve_escaping_shared_loans_at_lplace span p ctx in
   (* Note that we use [Write], not [Move]: we allow to drop values *below* borrows *)
   let access = Write in
   (* First make sure we can access the place, by ending loans or expanding
@@ -324,6 +328,19 @@ let pop_frame (config : config) (span : Meta.span) ~(pop_locals : bool)
     if pop_locals then
       (* Drop the loans *)
       let locals = List.rev locals in
+      (* The frame dies here: a local still holding *shared* loans may be
+         borrowed by the value we are about to return (promoted ['static]
+         constants, decomposed [&str] literals). Move those loans into dummy
+         variables - [pop] below reintroduces them in the caller frame - rather
+         than ending them, which would turn the returned borrow into ⊥. *)
+      let ctx =
+        List.fold_left
+          (fun ctx lid ->
+            InterpPaths.preserve_escaping_shared_loans_at_lplace span
+              (mk_place_from_var_id ctx span lid)
+              ctx)
+          ctx locals
+      in
       fold_left_apply_continuation
         (fun lid ctx ->
           drop_outer_loans_at_lplace config span
