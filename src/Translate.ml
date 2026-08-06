@@ -1059,10 +1059,13 @@ let trait_decl_is_builtin (ctx : gen_ctx) (id : Pure.trait_decl_id) : bool =
     [%silent_unwrap_opt_span] None
       (TraitDeclId.Map.find_opt id ctx.trans_trait_decls)
   in
-  let open ExtractBuiltin in
-  Option.is_some
-    (match_name_find_opt ctx.trans_ctx trait_decl.item_meta.name
-       (builtin_trait_decls_map ()))
+  (* We consult the [builtin_info] computed during the pure translation rather
+     than re-matching the name against the builtin map: the translation may
+     deliberately have dropped the builtin info (e.g. for monomorphized copies
+     of `Fn*` traits, which must be emitted as ordinary trait declarations —
+     see [SymbolicToPure.translate_trait_decl]). Re-matching here would wrongly
+     treat them as builtin again and skip emitting their structure. *)
+  Option.is_some trait_decl.builtin_info
 
 let trait_impl_is_builtin (ctx : gen_ctx) (id : Pure.trait_impl_id) : bool =
   let trait_impl =
