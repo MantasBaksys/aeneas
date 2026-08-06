@@ -1667,100 +1667,158 @@ let decompose_global_accesses (crate : crate) (f : fun_decl) : fun_decl =
 
 (** We do not support static regions yet.
 
-    In order to support some printing functions, for now we update their
-    signature to replace ['static] with a region variable. This should be fine
-    as a temporary measure as we can pretend these functions copy the input
-    string they receive (the static references are references to strings).
+    As a temporary measure, we replace ['static] with a regular region variable
+    in the signatures of the function declarations which mention it, and update
+    the call sites accordingly (by adding an erased region to the generic
+    arguments).
+
+    This is what makes it possible to translate functions which return
+    references to static data, as in:
+    {[
+      const NAN: &str = "NaN";
+      fn nan() -> &'static str { NAN }
+      fn f(x: &mut Buffer) -> &str { nan() }
+    ]}
+    Without this pass, the borrow returned by [nan] has no corresponding loan
+    anywhere in the environment: reborrowing it (which is what the [&*_] MIR
+    introduces to coerce ['static] down to the lifetime of [x]) then fails with
+    an "Unreachable" error in [InterpBorrowsCore.lookup_loan].
+
+    Pretending that ['static] is a regular region is sound for our purposes
+    because a caller can never observe the difference: a ['static] reference
+    which is treated as a shorter-lived one is simply used less than it could
+    be. It does however mean that we can not (yet) translate functions which
+    *store* static references in a data structure outliving the call.
+
+    We only update the top-level items: rewriting the signature of a trait
+    method would require updating the trait declaration, all of its
+    implementations, and all the call sites going through a trait reference. We
+    also leave the global initializers alone, as their signature has to agree
+    with the type of the global they initialize; those are already handled
+    specially by the interpreter (see [eval_global_as_fresh_symbolic_value]).
 
     TODO: remove once https://github.com/AeneasVerif/aeneas/issues/727 is fixed
 *)
 let replace_static (crate : crate) : crate =
-  (* We update the uses of: [core::fmt::{core::fmt::Arguments<'a>}::from_str] *)
-  let pat =
-    NameMatcher.parse_pattern "core::fmt::{core::fmt::Arguments<'a>}::from_str"
-  in
+  (* Does a signature contain a [&'static _]? If so, is it ever used for a
+     mutable borrow?
 
-  (* Find the function [core::fmt::{core::fmt::Arguments<'a>}::from_str]:
-     - we want to update its signature to replace 'static with a lifetime variable
-     - we want to update its uses
-  *)
-  let names_set = NameMatcher.NameMatcherMap.of_list [ (pat, ()) ] in
-  let match_ctx = Charon.NameMatcher.ctx_from_crate crate in
-  let in_set (d : fun_decl) : bool =
-    let config = ExtractName.default_match_config in
-    NameMatcher.NameMatcherMap.mem match_ctx config d.item_meta.name names_set
-  in
-  let decl_opt = ref None in
-  let in_set (_ : FunDeclId.id) (d : fun_decl) =
-    if in_set d then (
-      decl_opt := Some d;
-      true)
-    else false
-  in
+     Note that we deliberately only look at the regions of *reference* types.
+     ['static] also shows up as the (implicit) lifetime bound of trait objects
+     ([Box<dyn Trait>] really is [Box<dyn Trait + 'static>]) and as a region
+     argument of type declarations; turning those into region variables would
+     introduce back-propagation functions for types we do not support (see
+     [tests/src/dyn.rs]) without fixing anything, as the problem we address here
+     is specifically that of borrows without a corresponding loan. *)
+  let sig_static_mutability (sg : fun_sig) : lifetime_mutability option =
+    let found = ref false in
+    let mutable_ = ref false in
+    let visitor =
+      object
+        inherit [_] iter_ty as super
 
-  if not (FunDeclId.Map.exists in_set crate.fun_decls) then crate
-  else (* The function [from_str] is used in the crate *)
-    let d = Option.get !decl_opt in
-
-    (* Update the signature *)
-    let generics =
-      {
-        d.generics with
-        regions =
-          d.generics.regions
-          @ [
-              {
-                index = RegionId.of_int 1;
-                name = Some "'b";
-                variance = VaUnknown;
-                mutability = LtUnknown;
-              };
-            ];
-      }
+        method! visit_ty env ty =
+          (match ty with
+          | TRef (RStatic, _, rk) ->
+              found := true;
+              if rk = RMut then mutable_ := true
+          | _ -> ());
+          super#visit_ty env ty
+      end
     in
-    let signature =
-      let visitor =
-        object
-          inherit [_] map_ty
-          method! visit_RStatic _ = RVar (Free (RegionId.of_int 1))
-        end
-      in
-      visitor#visit_fun_sig () d.signature
-    in
+    visitor#visit_fun_sig () sg;
+    if not !found then None
+    else if !mutable_ then Some LtMutable
+    else Some LtShared
+  in
 
-    let d = { d with generics; signature } in
-    [%ltrace
-      let env = Print.crate_to_fmt_env crate in
-      "Updated declaration:\n" ^ Print.fun_decl_to_string env "" " " d];
+  (* Compute the declarations to update, together with the index of the region
+     variable we introduce for ['static] *)
+  let updated : (RegionId.id * lifetime_mutability) FunDeclId.Map.t =
+    FunDeclId.Map.filter_map
+      (fun _ (d : fun_decl) ->
+        match (d.src, d.is_global_initializer) with
+        | TopLevelItem, None -> (
+            match sig_static_mutability d.signature with
+            | None -> None
+            | Some mutability ->
+                let index =
+                  RegionId.of_int (List.length d.generics.regions)
+                in
+                Some (index, mutability))
+        | _ -> None)
+      crate.fun_decls
+  in
+
+  if FunDeclId.Map.is_empty updated then crate
+  else
+    (* Update the signatures *)
+    let update_sig (d : fun_decl) : fun_decl =
+      match FunDeclId.Map.find_opt d.def_id updated with
+      | None -> d
+      | Some (index, mutability) ->
+          let generics =
+            {
+              d.generics with
+              regions =
+                d.generics.regions
+                @ [
+                    {
+                      index;
+                      name = Some "'static_";
+                      variance = VaUnknown;
+                      mutability;
+                    };
+                  ];
+            }
+          in
+          let signature =
+            let visitor =
+              object
+                inherit [_] map_ty as super
+
+                method! visit_ty env ty =
+                  match super#visit_ty env ty with
+                  | TRef (RStatic, ty, rk) -> TRef (RVar (Free index), ty, rk)
+                  | ty -> ty
+              end
+            in
+            visitor#visit_fun_sig () d.signature
+          in
+          let d = { d with generics; signature } in
+          [%ltrace
+            let env = Print.crate_to_fmt_env crate in
+            "Updated declaration:\n" ^ Print.fun_decl_to_string env "" " " d];
+          d
+    in
     let crate =
-      { crate with fun_decls = FunDeclId.Map.add d.def_id d crate.fun_decls }
+      { crate with fun_decls = FunDeclId.Map.map update_sig crate.fun_decls }
     in
 
-    (* Update the uses of this definition *)
+    (* Update the uses of those definitions: we have to provide a region
+       argument for the region variable we introduced. The regions of the
+       generic arguments are erased inside function bodies anyway (see
+       [erase_body_regions]), so we simply add an erased region. *)
     let update (f : fun_decl) : fun_decl =
       match f.body with
       | StructuredBody body ->
           let visitor =
             object
-              inherit [_] map_statement
+              inherit [_] map_statement as super
 
-              method! visit_Call _ call on_unwind =
-                match call.func with
-                | FnOpRegular { kind = FunId (FRegular id) as kind; generics }
-                  when id = d.def_id ->
-                    let func =
-                      FnOpRegular
+              method! visit_fn_ptr env fn_ptr =
+                let fn_ptr = super#visit_fn_ptr env fn_ptr in
+                match fn_ptr.kind with
+                | FunId (FRegular id) when FunDeclId.Map.mem id updated ->
+                    {
+                      fn_ptr with
+                      generics =
                         {
-                          kind;
-                          generics =
-                            {
-                              generics with
-                              regions = generics.regions @ [ RErased ];
-                            };
-                        }
-                    in
-                    Call ({ call with func }, on_unwind)
-                | _ -> Call (call, on_unwind)
+                          fn_ptr.generics with
+                          regions = fn_ptr.generics.regions @ [ RErased ];
+                        };
+                    }
+                | _ -> fn_ptr
             end
           in
 
