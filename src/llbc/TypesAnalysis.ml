@@ -459,28 +459,16 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
             ty_info inputs
         in
         analyze span expl_info ty_info output
-    | TFnDef { binder_regions; binder_value = { kind = _; generics } } ->
-        (* For now we check that there are no regions anywhere.
-
-           TODO: the best would be to open all binders and then do a sanity
-           check (probably that no region bound at the level of the signature
-           is outlived by a locally bound region).
-         *)
-        [%cassert_opt_span] span (binder_regions = []) "Unimplemented";
-        let visitor =
-          object
-            inherit [_] iter_ty
-            method! visit_region _ _ = raise Utils.Found
-          end
-        in
-        let has_regions =
-          try
-            visitor#visit_generic_args () generics;
-            false
-          with Utils.Found -> true
-        in
-        [%cassert_opt_span] span (not has_regions) "Unimplemented";
-        ty_info
+    | TFnDef { binder_regions = _; binder_value = { kind = _; generics } } ->
+        (* A function-item type is a zero-sized value carrying no borrows. As
+           for [TFnPtr] just above, we simply explore the nested types (the
+           generic arguments) to gather borrow information, ignoring the
+           regions at the boundary (both those bound by the [TFnDef] binder and
+           those appearing among the generic arguments): a zero-sized value has
+           no mutable borrows of its own. *)
+        List.fold_left
+          (fun ty_info ty -> analyze span expl_info ty_info ty)
+          ty_info generics.types
     | TError _ ->
         [%craise_opt_span] span "Found type error in the output of charon"
     | _ -> [%craise_opt_span] span ("unsupported type: " ^ show_ty ty)

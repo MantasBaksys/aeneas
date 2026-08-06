@@ -36,6 +36,12 @@ let ty_regions (ty : ty) : RegionId.Set.t =
         (* Ignore the dyn traits by default *)
         if Config.type_analysis_ignore_dyn then ()
         else super#visit_TDynTrait env tr
+
+      (* Function-item and function-pointer types are zero-sized and carry no
+         borrows; their (possibly higher-ranked, i.e. bound) regions are not
+         value regions. Skip them, exactly like [TDynTrait]. *)
+      method! visit_TFnDef _ _ = ()
+      method! visit_TFnPtr _ _ = ()
     end
   in
   (* Explore the type *)
@@ -59,6 +65,14 @@ let ty_has_regions_in_pred (pred : region -> bool) (ty : ty) : bool =
         (* Ignore the dyn traits by default *)
         if Config.type_analysis_ignore_dyn then ()
         else super#visit_TDynTrait env tr
+
+      (* Function-item and function-pointer types are zero-sized and carry no
+         borrows; their (possibly higher-ranked) regions never induce borrow
+         projections into abstractions. Skip them, exactly like [TDynTrait]:
+         descending into a higher-ranked binder would otherwise call [pred] on a
+         bound region, which [region_in_set] rejects. *)
+      method! visit_TFnDef _ _ = ()
+      method! visit_TFnPtr _ _ = ()
     end
   in
   try
@@ -347,6 +361,15 @@ let raise_if_not_rty_visitor =
       (* Ignore dyn traits by default *)
       if Config.type_analysis_ignore_dyn then ()
       else super#visit_TDynTrait env tr
+
+    (* Function-item ([TFnDef]) and function-pointer ([TFnPtr]) types are
+       zero-sized and carry no borrows. They may be higher-ranked (e.g.
+       [for<'a> f<'a>] when the referenced function takes a reference), in which
+       case they legitimately contain bound regions. Such types are region
+       types nonetheless: we treat them as region-opaque here, exactly like
+       [TDynTrait] above. *)
+    method! visit_TFnDef _ _ = ()
+    method! visit_TFnPtr _ _ = ()
   end
 
 (** Return [true] if the type is a region type (i.e., it doesn't contain erased

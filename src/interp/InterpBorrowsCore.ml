@@ -479,6 +479,11 @@ let rec compare_rtys ?(allow_erased = false) (span : Meta.span) (ctx : eval_ctx)
       (* TODO: this is wrong, we need to compare the regions inside TDyn *)
       [%cassert] span (not Config.use_dyn_regions) "Unimplemented";
       default
+  | TFnDef _, TFnDef _ | TFnPtr _, TFnPtr _ ->
+      (* Function-item and function-pointer types are zero-sized and carry no
+         borrows, so their projections never intersect: return [default], like
+         [TDynTrait]. *)
+      default
   | _ ->
       [%craise] span
         ("Internal error, please report an issue.\n\nUnexpected inputs:"
