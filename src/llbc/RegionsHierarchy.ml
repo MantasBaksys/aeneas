@@ -170,28 +170,16 @@ let compute_regions_hierarchy_for_sig (span : Meta.span option) (crate : crate)
         (* We can ignore the outer regions *)
         let { Types.inputs; output; _ } = binder.binder_value in
         List.iter (explore_ty []) (output :: inputs)
-    | TFnDef { binder_regions; binder_value = { kind = _; generics } } ->
-        (* For now we check that there are no regions anywhere.
-
-           TODO: the best would be to open all binders and then do a sanity
-           check (probably that no region bound at the level of the signature
-           is outlived by a locally bound region).
-         *)
-        [%cassert_opt_span] span (binder_regions = []) "Unimplemented";
-        let visitor =
-          object
-            inherit [_] iter_ty
-            method! visit_region _ _ = raise Utils.Found
-          end
-        in
-        let has_regions =
-          try
-            visitor#visit_generic_args () generics;
-            false
-          with Utils.Found -> true
-        in
-        [%cassert_opt_span] span (not has_regions) "Unimplemented";
-        ()
+    | TFnDef { binder_regions = _; binder_value = { kind = _; generics } } ->
+        (* A function-item type is a zero-sized value: it carries no borrows,
+           so the regions appearing in it do not induce outlives constraints on
+           the value itself. In particular the regions bound by the [TFnDef]
+           binder (the late-bound lifetimes of the referenced function) and the
+           outer regions are irrelevant here. We simply explore the generic
+           arguments to pick up any relations that might appear between
+           signature-level regions nested inside a generic type, ignoring the
+           outer regions - exactly as we do for [TFnPtr] just above. *)
+        explore_generics [] generics
     | TDynTrait _ ->
         [%cassert_opt_span] span Config.type_analysis_ignore_dyn "Unimplemented"
     | TError _ ->

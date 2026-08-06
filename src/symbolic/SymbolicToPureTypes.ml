@@ -398,8 +398,12 @@ let rec translate_fwd_ty (span : Meta.span option) (decls_ctx : C.decls_ctx)
         "Unimplemented";
       let trait_ref = translate_fwd_trait_ref span decls_ctx trait_ref in
       TTraitType (trait_ref, type_name)
-  | TFnDef { binder_regions; binder_value = { kind; generics } } -> (
-      [%cassert_opt_span] span (binder_regions = []) "Unimplemented";
+  | TFnDef { binder_regions = _; binder_value = { kind; generics } } -> (
+      (* [binder_regions] may be non-empty when the function-item type is
+         higher-ranked (e.g. [for<'a> f<'a>] when the referenced function takes
+         a reference). This is irrelevant here: pure types carry no regions, and
+         [translate_fwd_generic_args] already erases them (see
+         [translate_generic_args]). *)
       let generics = translate_fwd_generic_args span decls_ctx generics in
       match kind with
       | T.FunId (FBuiltin _) -> [%craise_opt_span] span "Unimplemented"
@@ -542,7 +546,10 @@ and compute_back_ty_num_levels (span : Meta.span option)
           "Unimplemented";
         save_count outer_regions
     | TFnDef _ | TFnPtr _ ->
-        [%craise_opt_span] span "Arrow types are not supported yet"
+        (* Function-item and function-pointer types are zero-sized and carry no
+           borrows, hence no mutable borrows to give back: there are no backward
+           types beneath them. Stop here, like [TRawPtr] / shared references. *)
+        save_count outer_regions
     | TDynTrait _ ->
         [%craise_opt_span] span "Dynamic trait types are not supported yet"
     | TError _ ->
@@ -677,7 +684,10 @@ and translate_back_ty_aux (span : Meta.span option) (decls_ctx : C.decls_ctx)
           "Unimplemented";
         stop outer_regions ty
     | TFnDef _ | TFnPtr _ ->
-        [%craise_opt_span] span "Arrow types are not supported yet"
+        (* Function-item and function-pointer types are zero-sized and carry no
+           borrows, hence no backward type to give back. Stop here, like
+           [TRawPtr] / shared references. *)
+        stop outer_regions ty
     | TDynTrait _ ->
         [%craise_opt_span] span "Dynamic trait types are not supported yet"
     | TError _ ->

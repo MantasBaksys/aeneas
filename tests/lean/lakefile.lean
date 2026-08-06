@@ -39,6 +39,7 @@ package «tests» {}
 @[default_target] lean_lib Dyn
 @[default_target] lean_lib DynamicSize
 @[default_target] lean_lib ErrorDescription
+@[default_target] lean_lib FnDefRegions
 @[default_target] lean_lib FromTo
 @[default_target] lean_lib GenericUnitOutput
 @[default_target] lean_lib Hashmap
