@@ -253,6 +253,55 @@ let outer_loans_in_value (v : tvalue) : bool =
     false
   with Found -> true
 
+(** Check if a value contains outer loans, and if all of them are *shared*
+    loans.
+
+    Returns [false] if the value contains no outer loan at all, or if it
+    contains at least one outer mutable loan. *)
+let only_outer_shared_loans_in_value (v : tvalue) : bool =
+  let found_shared = ref false in
+  let obj =
+    object
+      inherit [_] iter_tvalue
+
+      method! visit_loan_content _env lc =
+        match lc with
+        | VSharedLoan _ ->
+            (* Don't dive into the borrowed value: we only look at outer loans *)
+            found_shared := true
+        | VMutLoan _ -> raise Found
+
+      method! visit_borrow_content _ _ =
+        (* Do nothing so as *not to dive* in borrowed values *) ()
+    end
+  in
+  (* We use exceptions *)
+  try
+    obj#visit_tvalue () v;
+    !found_shared
+  with Found -> false
+
+(** Return the ids of the outer *shared* loans of a value. *)
+let outer_shared_loan_ids_in_value (v : tvalue) : BorrowId.Set.t =
+  let ids = ref BorrowId.Set.empty in
+  let obj =
+    object
+      inherit [_] iter_tvalue
+
+      method! visit_loan_content _env lc =
+        match lc with
+        | VSharedLoan (lid, _) ->
+            (* Don't dive into the borrowed value: we only look at outer loans *)
+            ids := BorrowId.Set.add lid !ids
+        | VMutLoan _ -> ()
+
+      method! visit_borrow_content _ _ =
+        (* Do nothing so as *not to dive* in borrowed values *) ()
+    end
+  in
+  obj#visit_tvalue () v;
+  !ids
+
 let symbolic_value_is_greedily_expandable (span : Meta.span option)
     (type_decls : type_decl TypeDeclId.Map.t)
     (type_infos : TypesAnalysis.type_infos) (sv : symbolic_value) : bool =
