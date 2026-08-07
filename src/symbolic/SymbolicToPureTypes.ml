@@ -577,11 +577,19 @@ and compute_back_ty_num_levels (span : Meta.span option)
           (generics = TypesUtils.empty_generic_args)
           "Unimplemented";
         save_count outer_regions
-    | TFnDef _ | TFnPtr _ ->
-        (* Function-item and function-pointer types are zero-sized and carry no
-           borrows, hence no mutable borrows to give back: there are no backward
-           types beneath them. Stop here, like [TRawPtr] / shared references. *)
+    | TFnDef _ ->
+        (* A function-item type is zero-sized: its unique inhabitant is a
+           compile-time constant that cannot alias the caller's data, so it
+           holds no mutable borrow to give back and there are no backward types
+           beneath it. Stop here, like [TRawPtr] / shared references. *)
         save_count outer_regions
+    | TFnPtr _ ->
+        (* Deliberately still rejected: a function pointer is not zero-sized, so
+           the argument made for [TFnDef] does not apply to it. Function
+           pointers are unsupported elsewhere anyway (see [translate_sty]), so
+           relaxing this would only turn a loud failure into a silently dropped
+           backward function. *)
+        [%craise_opt_span] span "Arrow types are not supported yet"
     | TDynTrait _ ->
         [%craise_opt_span] span "Dynamic trait types are not supported yet"
     | TError _ ->
@@ -715,11 +723,14 @@ and translate_back_ty_aux (span : Meta.span option) (decls_ctx : C.decls_ctx)
           (generics = TypesUtils.empty_generic_args)
           "Unimplemented";
         stop outer_regions ty
-    | TFnDef _ | TFnPtr _ ->
-        (* Function-item and function-pointer types are zero-sized and carry no
-           borrows, hence no backward type to give back. Stop here, like
-           [TRawPtr] / shared references. *)
+    | TFnDef _ ->
+        (* A function-item type is zero-sized and holds no borrow, hence no
+           backward type to give back. Stop here, like [TRawPtr] / shared
+           references. *)
         stop outer_regions ty
+    | TFnPtr _ ->
+        (* Deliberately still rejected - see [compute_back_ty_num_levels]. *)
+        [%craise_opt_span] span "Arrow types are not supported yet"
     | TDynTrait _ ->
         [%craise_opt_span] span "Dynamic trait types are not supported yet"
     | TError _ ->
