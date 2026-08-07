@@ -170,7 +170,7 @@ let compute_regions_hierarchy_for_sig (span : Meta.span option) (crate : crate)
         (* We can ignore the outer regions *)
         let { Types.inputs; output; _ } = binder.binder_value in
         List.iter (explore_ty []) (output :: inputs)
-    | TFnDef { binder_regions = _; binder_value = { kind = _; generics } } ->
+    | TFnDef { binder_regions; binder_value = { kind = _; generics } } ->
         (* A function-item type is a zero-sized value: it carries no borrows,
            so the regions appearing in it do not induce outlives constraints on
            the value itself. In particular the regions bound by the [TFnDef]
@@ -194,7 +194,26 @@ let compute_regions_hierarchy_for_sig (span : Meta.span option) (crate : crate)
            or at any of the other places where we make the same approximation
            (see [Config.type_analysis_ignore_fn_types]). Expressing the check
            would first require extending the Charon AST. *)
-        explore_generics [] generics
+        if Config.type_analysis_ignore_fn_types then
+          explore_generics [] generics
+        else begin
+          (* The strict check we used to perform, kept behind the flag so that
+             turning the approximation off reveals every place relying on it. *)
+          [%cassert_opt_span] span (binder_regions = []) "Unimplemented";
+          let visitor =
+            object
+              inherit [_] iter_ty
+              method! visit_region _ _ = raise Utils.Found
+            end
+          in
+          let has_regions =
+            try
+              visitor#visit_generic_args () generics;
+              false
+            with Utils.Found -> true
+          in
+          [%cassert_opt_span] span (not has_regions) "Unimplemented"
+        end
     | TDynTrait _ ->
         [%cassert_opt_span] span Config.type_analysis_ignore_dyn "Unimplemented"
     | TError _ ->

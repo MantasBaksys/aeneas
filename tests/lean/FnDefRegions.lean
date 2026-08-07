@@ -195,51 +195,13 @@ def double (x : Std.U32) : Result Std.U32 := do
 def map_no_ref (o : Option Std.U32) : Result (Option Std.U32) := do
   core.option.Option.map (BuiltinFnOnce Std.U32 Std.U32) o (double)
 
-/-- [fn_def_regions::pick_shared]:
-    Source: 'tests/src/fn_def_regions.rs', lines 76:0-78:1
-    Visibility: public -/
-def pick_shared
-  (x : Std.U32) (_y : Std.U32) :
-  Result (Std.U32 × (Std.U32 → (Std.U32 × Std.U32)))
-  := do
-  let back := fun x1 => (x1, _y)
-  ok (x, back)
-
-/-- [fn_def_regions::pick_shared2]:
-    Source: 'tests/src/fn_def_regions.rs', lines 80:0-82:1
-    Visibility: public -/
-def pick_shared2
-  (_x : Std.U32) (y : Std.U32) :
-  Result (Std.U32 × (Std.U32 → (Std.U32 × Std.U32)))
-  := do
-  let back := fun y1 => (_x, y1)
-  ok (y, back)
-
-/-- [fn_def_regions::write_through_pick]:
-    Source: 'tests/src/fn_def_regions.rs', lines 84:0-87:1
-    Visibility: public -/
-def write_through_pick
-  (a : Std.U32) (b : Std.U32) : Result (Std.U32 × Std.U32) := do
-  let (r, pick_shared_back) ← pick_shared a b
-  let r1 ← r + 1#u32
-  ok (pick_shared_back r1)
-
-/-- [fn_def_regions::write_through_pick2]:
-    Source: 'tests/src/fn_def_regions.rs', lines 89:0-92:1
-    Visibility: public -/
-def write_through_pick2
-  (a : Std.U32) (b : Std.U32) : Result (Std.U32 × Std.U32) := do
-  let (r, pick_shared2_back) ← pick_shared2 a b
-  let r1 ← r + 1#u32
-  ok (pick_shared2_back r1)
-
 /-- [fn_def_regions::bump]:
-    Source: 'tests/src/fn_def_regions.rs', lines 96:0-98:1 -/
+    Source: 'tests/src/fn_def_regions.rs', lines 86:0-88:1 -/
 def bump (x : Std.U32) : Result Std.U32 := do
   x + 1#u32
 
 /-- [fn_def_regions::apply_mut]:
-    Source: 'tests/src/fn_def_regions.rs', lines 100:0-102:1 -/
+    Source: 'tests/src/fn_def_regions.rs', lines 90:0-92:1 -/
 def apply_mut
   {F : Type} (coreopsfunctionFnFTupleMut0U32TupleInst : core.ops.function.Fn F
   Std.U32 Unit) (x : Std.U32) (f : F) :
@@ -249,18 +211,18 @@ def apply_mut
   ok x1
 
 /-- [fn_def_regions::fn_item_through_generic]:
-    Source: 'tests/src/fn_def_regions.rs', lines 104:0-106:1
+    Source: 'tests/src/fn_def_regions.rs', lines 94:0-96:1
     Visibility: public -/
 def fn_item_through_generic (x : Std.U32) : Result Std.U32 := do
   apply_mut (BuiltinFn Std.U32 Unit) x (bump)
 
 /-- [fn_def_regions::is_pos]:
-    Source: 'tests/src/fn_def_regions.rs', lines 110:0-112:1 -/
+    Source: 'tests/src/fn_def_regions.rs', lines 102:0-104:1 -/
 def is_pos (c : Std.U8) : Result Bool := do
   ok (c > 0#u8)
 
 /-- [fn_def_regions::any_of]: loop body 0:
-    Source: 'tests/src/fn_def_regions.rs', lines 116:4-118:5 -/
+    Source: 'tests/src/fn_def_regions.rs', lines 108:4-110:5 -/
 @[rust_loop_body]
 def any_of_loop.body
   {F : Type} (coreopsfunctionFnFTupleSharedU8BoolInst : core.ops.function.Fn F
@@ -278,7 +240,7 @@ def any_of_loop.body
       ok (cont (iter1, acc1))
 
 /-- [fn_def_regions::any_of]: loop 0:
-    Source: 'tests/src/fn_def_regions.rs', lines 116:4-118:5 -/
+    Source: 'tests/src/fn_def_regions.rs', lines 108:4-110:5 -/
 @[rust_loop]
 def any_of_loop
   {F : Type} (coreopsfunctionFnFTupleSharedU8BoolInst : core.ops.function.Fn F
@@ -291,7 +253,7 @@ def any_of_loop
     (iter, acc)
 
 /-- [fn_def_regions::any_of]:
-    Source: 'tests/src/fn_def_regions.rs', lines 114:0-120:1 -/
+    Source: 'tests/src/fn_def_regions.rs', lines 106:0-112:1 -/
 def any_of
   {F : Type} (coreopsfunctionFnFTupleShared0U8BoolInst : core.ops.function.Fn F
   Std.U8 Bool) (v : Slice Std.U8) (f : F) :
@@ -302,7 +264,7 @@ def any_of
   any_of_loop coreopsfunctionFnFTupleShared0U8BoolInst iter f false
 
 /-- [fn_def_regions::fn_item_with_live_mut]:
-    Source: 'tests/src/fn_def_regions.rs', lines 122:0-128:1
+    Source: 'tests/src/fn_def_regions.rs', lines 114:0-120:1
     Visibility: public -/
 def fn_item_with_live_mut
   (v : Slice Std.U8) (out : Std.U32) : Result (Bool × Std.U32) := do
@@ -311,5 +273,43 @@ def fn_item_with_live_mut
   then let out1 ← out + 1#u32
        ok (true, out1)
   else ok (false, out)
+
+/-- [fn_def_regions::pick_shared]:
+    Source: 'tests/src/fn_def_regions.rs', lines 142:0-144:1
+    Visibility: public -/
+def pick_shared
+  (x : Std.U32) (_y : Std.U32) :
+  Result (Std.U32 × (Std.U32 → (Std.U32 × Std.U32)))
+  := do
+  let back := fun x1 => (x1, _y)
+  ok (x, back)
+
+/-- [fn_def_regions::pick_shared2]:
+    Source: 'tests/src/fn_def_regions.rs', lines 146:0-148:1
+    Visibility: public -/
+def pick_shared2
+  (_x : Std.U32) (y : Std.U32) :
+  Result (Std.U32 × (Std.U32 → (Std.U32 × Std.U32)))
+  := do
+  let back := fun y1 => (_x, y1)
+  ok (y, back)
+
+/-- [fn_def_regions::write_through_pick]:
+    Source: 'tests/src/fn_def_regions.rs', lines 150:0-153:1
+    Visibility: public -/
+def write_through_pick
+  (a : Std.U32) (b : Std.U32) : Result (Std.U32 × Std.U32) := do
+  let (r, pick_shared_back) ← pick_shared a b
+  let r1 ← r + 1#u32
+  ok (pick_shared_back r1)
+
+/-- [fn_def_regions::write_through_pick2]:
+    Source: 'tests/src/fn_def_regions.rs', lines 155:0-158:1
+    Visibility: public -/
+def write_through_pick2
+  (a : Std.U32) (b : Std.U32) : Result (Std.U32 × Std.U32) := do
+  let (r, pick_shared2_back) ← pick_shared2 a b
+  let r1 ← r + 1#u32
+  ok (pick_shared2_back r1)
 
 end fn_def_regions

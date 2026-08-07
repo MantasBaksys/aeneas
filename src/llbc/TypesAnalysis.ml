@@ -459,7 +459,7 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
             ty_info inputs
         in
         analyze span expl_info ty_info output
-    | TFnDef { binder_regions = _; binder_value = { kind = _; generics } } ->
+    | TFnDef { binder_regions; binder_value = { kind = _; generics } } ->
         (* A function-item type is a zero-sized value carrying no borrows. As
            for [TFnPtr] just above, we simply explore the nested types (the
            generic arguments) to gather borrow information, ignoring the
@@ -473,6 +473,24 @@ let analyze_full_ty (span : Meta.span option) (updated : bool ref)
            binders and verifying that no signature-level region is outlived by a
            locally bound one - cannot currently be expressed, and for what would
            be needed to express it. *)
+        if not Config.type_analysis_ignore_fn_types then begin
+          (* The strict check we used to perform, kept behind the flag so that
+             turning the approximation off reveals every place relying on it. *)
+          [%cassert_opt_span] span (binder_regions = []) "Unimplemented";
+          let visitor =
+            object
+              inherit [_] iter_ty
+              method! visit_region _ _ = raise Utils.Found
+            end
+          in
+          let has_regions =
+            try
+              visitor#visit_generic_args () generics;
+              false
+            with Utils.Found -> true
+          in
+          [%cassert_opt_span] span (not has_regions) "Unimplemented"
+        end;
         List.fold_left
           (fun ty_info ty -> analyze span expl_info ty_info ty)
           ty_info generics.types

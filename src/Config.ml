@@ -522,8 +522,14 @@ let use_dyn_regions = false
     bound by the binder are unrelated to the regions of the enclosing signature.
     See the comment on the [TFnDef] case of
     [RegionsHierarchy.compute_regions_hierarchy_for_sig] for why that check
-    cannot currently be expressed. As for dynamic traits, we guard the checks
-    with this boolean so that it is easy to activate them. *)
+    cannot currently be expressed.
+
+    As for dynamic traits, every relaxation is guarded by this boolean, so
+    setting it to [false] restores the original strict checks and reveals all
+    the places that rely on the approximation. The guarded sites are the three
+    visitors in [TypesUtils], the [TFnDef] case of
+    [RegionsHierarchy.compute_regions_hierarchy_for_sig], and the [TFnDef] case
+    of [TypesAnalysis.analyze]. *)
 let type_analysis_ignore_fn_types = true
 
 (** We currently ignore the regions inside function-item types: once we take
