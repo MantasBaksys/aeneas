@@ -338,6 +338,38 @@ let translate_type_id (span : Meta.span option) (id : T.type_id) : type_id =
       TBuiltin aty
   | TTuple -> TTuple
 
+(** Compute the "uninstantiated output" override for a function that is a trait
+    method implementation or a trait declaration default method.
+
+    See the documentation of [uninst_output] in
+    [translate_inst_fun_sig_to_decomposed_fun_type] and the [ignore_output]
+    logic: the decision to eliminate a unit forward output must be taken from
+    the trait method's *declared* output type. For a trait method that output
+    may be a generic type parameter (which the declaration keeps) even when a
+    concrete implementation instantiates it with unit (e.g. a closure
+    implementing [FnMut<.., ()>] whose [Output = ()]). Deciding based on the
+    concrete unit output would make the impl eliminate its output while the
+    trait method declaration keeps it, so the two types would disagree. This
+    override must be applied consistently at the definition site (see
+    [translate_fun_sigs_from_decl]) and at every call site (see
+    [SymbolicToPureExpressions]) of such a method. *)
+let uninst_output_override_of_src (decls_ctx : C.decls_ctx)
+    (src : Types.item_source) : Types.ty option =
+  let method_decl_output (trait_ref : Types.trait_decl_ref)
+      (item : Types.assoc_item_id) : Types.ty option =
+    match item with
+    | AssocIdMethod method_id ->
+        Option.map
+          (fun (sg : LlbcAst.bound_fun_sig) -> sg.item_binder_value.output)
+          (Substitute.lookup_flat_method_sig decls_ctx.crate trait_ref.id
+             method_id)
+    | _ -> None
+  in
+  match src with
+  | TraitImplItem (_, trait_ref, item, _) -> method_decl_output trait_ref item
+  | TraitDeclItem (trait_ref, item) -> method_decl_output trait_ref item
+  | _ -> None
+
 (** Translate a type, seen as an input/output of a forward function (preserve
     all borrows, etc.).
 
@@ -1010,8 +1042,8 @@ and translate_inst_fun_sig_to_decomposed_fun_type (span : Meta.span option)
   { fwd_inputs; fwd_output; back_sg; fwd_info }
 
 and translate_fun_sigs (span : span option) (decls_ctx : C.decls_ctx)
-    (fun_id : fn_ptr_kind) (sg : A.bound_fun_sig)
-    (input_names : string option list) : fun_sigs =
+    ?(uninst_output : Types.ty option) (fun_id : fn_ptr_kind)
+    (sg : A.bound_fun_sig) (input_names : string option list) : fun_sigs =
   (* Retrieve the list of parent backward functions *)
   let regions_hierarchy =
     RegionsHierarchy.compute_regions_hierarchy_for_sig span decls_ctx.crate sg
@@ -1054,10 +1086,21 @@ and translate_fun_sigs (span : span option) (decls_ctx : C.decls_ctx)
   let generics, preds = translate_generic_params span sg.item_binder_params in
 
   let fun_ty =
-    (* Here the signature is not instantiated, so the uninstantiated output is
-       simply the signature's output. *)
+    (* The uninstantiated output is used only to decide whether to eliminate a
+       (unit) forward output (see [fwd_info.ignore_output] and the documentation
+       of [translate_inst_fun_sig_to_decomposed_fun_type]). For a regular,
+       uninstantiated signature this is simply the signature's output. For a
+       trait *implementation* (or default) method we override it with the trait
+       method's *declared* output (see [uninst_output] computed by the caller),
+       so that the impl makes the same elimination decision as the trait method
+       declaration: if the declared output is a generic type parameter, the
+       declaration keeps its output, so the impl must too, even when the
+       parameter happens to be instantiated with unit here (as for a closure
+       implementing [FnMut<.., ()>]). Deciding otherwise makes the impl's type
+       disagree with the trait method field it is assigned to. *)
+    let uninst_output = Option.value ~default:inst_sg.output uninst_output in
     translate_inst_fun_sig_to_decomposed_fun_type span decls_ctx fun_id inst_sg
-      inst_sg.output input_names
+      uninst_output input_names
   in
   let dsg =
     { generics; llbc_generics = sg.item_binder_params; preds; fun_ty }
@@ -1153,7 +1196,13 @@ and translate_fun_sigs_from_decl (decls_ctx : C.decls_ctx)
           (LlbcAstUtils.fun_body_get_input_vars body)
     | _ -> List.map (fun _ -> None) fdef.signature.inputs
   in
-  translate_fun_sigs (Some span) decls_ctx (FunId (FRegular fdef.def_id))
+  (* If this function is a trait method (either an implementation method or a
+     default body in a trait declaration), the decision to eliminate a unit
+     forward output must be taken from the trait method's *declared* output
+     type. See [uninst_output_override_of_src] and [translate_fun_sigs]. *)
+  let uninst_output = uninst_output_override_of_src decls_ctx fdef.src in
+  translate_fun_sigs (Some span) decls_ctx ?uninst_output
+    (FunId (FRegular fdef.def_id))
     (bound_fun_sig_of_decl fdef)
     input_names
 

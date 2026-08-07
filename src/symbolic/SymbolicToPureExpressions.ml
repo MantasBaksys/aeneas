@@ -382,9 +382,28 @@ and translate_function_call_aux (call : S.call) (e : S.expr) (ctx : bs_ctx) :
           let sg = Option.get call.sg in
           let inst_sg = Option.get call.inst_sg in
           let decls_ctx = ctx.decls_ctx in
+          (* If the callee is a trait method implementation (or default), the
+             decision to eliminate a unit forward output must be taken from the
+             trait method's *declared* output type, exactly as at the callee's
+             definition site (see [uninst_output_override_of_src] and
+             [translate_fun_sigs_from_decl]). Otherwise a call to e.g. a
+             closure's `FnMut::call_mut` whose `Output = ()` would drop the unit
+             output at the call site while the callee keeps it, so the
+             destructuring pattern would disagree with the callee's return
+             type. *)
+          let uninst_output =
+            match fid with
+            | FunId (FRegular fid) ->
+                let decl =
+                  FunDeclId.Map.find fid ctx.fun_ctx.llbc_fun_decls
+                in
+                Option.value ~default:sg.output
+                  (uninst_output_override_of_src decls_ctx decl.src)
+            | _ -> sg.output
+          in
           let dsg =
             translate_inst_fun_sig_to_decomposed_fun_type (Some ctx.span)
-              decls_ctx fid_t inst_sg sg.output
+              decls_ctx fid_t inst_sg uninst_output
               (List.map (fun _ -> None) sg.inputs)
           in
           let back_tys = compute_back_tys_with_info dsg in
