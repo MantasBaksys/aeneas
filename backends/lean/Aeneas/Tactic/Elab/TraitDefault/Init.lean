@@ -57,7 +57,10 @@ command resolves this circularity at elaboration time by:
 2. After elaboration, **unfolding** every `@[trait_default]`-marked function call,
    exposing the field projections (e.g., `self.N`).
 3. **Substituting** those projections with the already-resolved field values.
-4. Repeating until every field is free of the self-reference.
+4. When that stalls, **unfolding helpers that take the instance unprojected**
+   (Aeneas generates these for closures inside default method bodies), which
+   exposes further projections, then going back to step 2.
+5. Repeating until every field is free of the self-reference.
 
 The result is a fully concrete, non-recursive definition that Lean's kernel
 accepts.
@@ -218,6 +221,57 @@ def substituteProjections (e : Expr) (selfFvarId : FVarId) (structName : Name)
                   return .done (mkAppN val extraArgs)
       return .continue)
 
+/-- Unfold constant applications that pass the self-reference `selfFvarId` as a
+    *whole instance* argument, rather than projecting a field out of it.
+
+    `substituteProjections` can only eliminate self-references of the shape
+    `Trait.field self …`. A trait default is however free to hand the entire
+    instance to a helper:
+
+    ```
+    def Trait.m.default (inst : Trait Self) (self : Self) : … :=
+      helper (NestedInst.mk inst) …          -- `inst` used as a whole
+    ```
+
+    Aeneas generates exactly this shape whenever a default method body contains a
+    closure: the closure's `Fn`/`FnMut`/`FnOnce` instances are parameterised by the
+    enclosing trait instance, so the instance is threaded through unprojected.
+    Left alone, the fixed-point iteration in `resolveStructFields` stalls.
+
+    Unfolding those helpers is what makes progress: their bodies do eventually
+    project (`inst.get x`), and once the projection is exposed
+    `substituteProjections` can finish the job.
+
+    We only unfold a constant application when the self free variable occurs among
+    its arguments, which keeps the term from blowing up. Projection functions of the
+    structure itself are deliberately skipped: `substituteProjections` already
+    handles them, and unfolding them would only obscure the pattern it matches on.
+    Returns the rewritten expression together with whether anything was unfolded. -/
+def unfoldSelfApplications (e : Expr) (selfFvarId : FVarId) (projFns : Std.HashSet Name) :
+    MetaM (Expr × Bool) := do
+  let changed ← IO.mkRef false
+  let e' ← Core.transform e (pre := fun e => do
+    let fn := e.getAppFn
+    let .const name _ := fn | return .continue
+    if projFns.contains name then return .continue
+    let args := e.getAppArgs
+    let mentionsSelf := args.any fun a =>
+      let a := a.consumeMData
+      a.isFVar && a.fvarId! == selfFvarId
+    if !mentionsSelf then return .continue
+    let some e' ← withTransparency .all <| unfoldDefinition? e | return .continue
+    changed.set true
+    return .visit e'.headBeta)
+  return (e', ← changed.get)
+
+/-- Maximum number of `unfoldSelfApplications` rounds attempted after the
+    projection-substitution fixed point stalls.
+
+    Each round strips one layer of instance-threading helpers. Nesting deeper than
+    this is not something Aeneas generates, and the bound guarantees termination
+    even if a helper is (mutually) recursive in its instance argument. -/
+def maxSelfUnfoldRounds : Nat := 8
+
 /-- Resolve all fields of a structure constructor application, eliminating
     self-references.
 
@@ -271,25 +325,47 @@ def resolveStructFields (value : Expr) (selfFvarId : FVarId) (type : Expr) : Met
     else
       unresolved := unresolved.push i
 
-  -- Fixed-point iteration
-  let mut progress := true
-  while progress do
-    progress := false
-    let mut stillUnresolved : Array Nat := #[]
+  -- Fixed-point iteration: alternate projection substitution with, when that
+  -- stalls, unfolding helpers that take the instance as a whole.
+  let mut projFns : Std.HashSet Name := {}
+  for i in [:numFields] do
+    if let some projFn := structInfo.getProjFn? i then
+      projFns := projFns.insert projFn
+
+  let mut unfoldRounds := 0
+  repeat
+    let mut progress := true
+    while progress do
+      progress := false
+      let mut stillUnresolved : Array Nat := #[]
+      for i in unresolved do
+        let fieldVal := fieldValues[i]!
+        let fieldVal' ← unfoldTraitDefaults fieldVal
+        let fieldVal' ← substituteProjections fieldVal' selfFvarId structName resolved
+        if !exprContainsFVar fieldVal' selfFvarId then
+          resolved := resolved.insert i fieldVal'
+          fieldValues := fieldValues.set! i fieldVal'
+          progress := true
+          trace[Aeneas.implDef] "  {structInfo.fieldNames[i]!} resolved"
+        else
+          stillUnresolved := stillUnresolved.push i
+          fieldValues := fieldValues.set! i fieldVal'
+          trace[Aeneas.implDef] "  {structInfo.fieldNames[i]!} still unresolved"
+      unresolved := stillUnresolved
+
+    if unresolved.isEmpty || unfoldRounds ≥ maxSelfUnfoldRounds then break
+    -- The projection-based fixed point stalled. Peel one layer of helpers that
+    -- receive the instance unprojected, then retry.
+    let mut anyUnfolded := false
     for i in unresolved do
-      let fieldVal := fieldValues[i]!
-      let fieldVal' ← unfoldTraitDefaults fieldVal
-      let fieldVal' ← substituteProjections fieldVal' selfFvarId structName resolved
-      if !exprContainsFVar fieldVal' selfFvarId then
-        resolved := resolved.insert i fieldVal'
+      let (fieldVal', changed) ← unfoldSelfApplications fieldValues[i]! selfFvarId projFns
+      if changed then
+        anyUnfolded := true
         fieldValues := fieldValues.set! i fieldVal'
-        progress := true
-        trace[Aeneas.implDef] "  {structInfo.fieldNames[i]!} resolved"
-      else
-        stillUnresolved := stillUnresolved.push i
-        fieldValues := fieldValues.set! i fieldVal'
-        trace[Aeneas.implDef] "  {structInfo.fieldNames[i]!} still unresolved"
-    unresolved := stillUnresolved
+        trace[Aeneas.implDef]
+          "  {structInfo.fieldNames[i]!}: unfolded whole-instance applications"
+    if !anyUnfolded then break
+    unfoldRounds := unfoldRounds + 1
 
   if !unresolved.isEmpty then
     let unresolvedNames := unresolved.map fun i => structInfo.fieldNames[i]!

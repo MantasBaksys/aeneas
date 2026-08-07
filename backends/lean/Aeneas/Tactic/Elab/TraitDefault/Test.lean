@@ -79,4 +79,52 @@ namespace Test3
 
 end Test3
 
+namespace Test4
+
+  /-! ## Test: a default that passes the whole instance to a helper
+
+      This is the shape Aeneas generates when a trait default method body contains
+      a closure: the closure's `Fn*` instance is parameterised by the *enclosing
+      trait instance*, so the instance is threaded through unprojected rather than
+      as a field projection. `substituteProjections` alone cannot eliminate such a
+      self-reference; `unfoldSelfApplications` peels the helper to expose the
+      projection underneath. -/
+
+  structure Trait2 (α : Type) where
+    len : α → Nat
+    get : α → Nat → Option Nat
+    isEmpty : α → Bool
+    interpolate : {F : Type} → (F → Nat) → α → Nat
+
+  /-- A nested "closure instance", parameterised by the whole trait instance. -/
+  structure ClosureInst (α : Type) where
+    callMut : α → Nat → Option Nat
+
+  def Trait2.closureInst (inst : Trait2 α) : ClosureInst α :=
+    { callMut := fun a i => inst.get a i }
+
+  @[trait_default]
+  def Trait2.isEmpty.default (inst : Trait2 α) (a : α) : Bool :=
+    inst.len a == 0
+
+  /-- Polymorphic default whose body hands `inst` to `Trait2.closureInst`
+      unprojected. -/
+  @[trait_default]
+  def Trait2.interpolate.default (inst : Trait2 α) {F : Type} (_f : F → Nat) (a : α) : Nat :=
+    ((Trait2.closureInst inst).callMut a 0).getD 0
+
+  impl_def Trait2Inst : Trait2 (List Nat) := {
+    len := List.length
+    get := fun l i => l[i]?
+    isEmpty := Trait2.isEmpty.default Trait2Inst
+    interpolate := fun {F : Type} (f : F → Nat) => Trait2.interpolate.default Trait2Inst f
+  }
+
+  -- The instance must be a genuine, kernel-accepted definition that computes.
+  example : Trait2Inst.isEmpty [] = true := by native_decide
+  example : Trait2Inst.interpolate (F := Nat) id [7, 8] = 7 := by native_decide
+  example : Trait2Inst.interpolate (F := Nat) id [] = 0 := by native_decide
+
+end Test4
+
 end Aeneas.TraitDefault.Test
