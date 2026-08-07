@@ -502,26 +502,39 @@ let type_analysis_ignore_dyn = true
     be updated. *)
 let use_dyn_regions = false
 
-(** When analyzing types, we ignore the regions of function-item ([TFnDef]) and
-    function-pointer ([TFnPtr]) types, in the same way and for the same reason
-    as we ignore dynamic traits (see [type_analysis_ignore_dyn]).
+(** When analyzing types, we ignore the regions of function-item ([TFnDef])
+    types, in the same way and for the same reason as we ignore dynamic traits
+    (see [type_analysis_ignore_dyn]).
 
-    Such a type is a zero-sized value carrying no borrows, so the regions
-    appearing in it - including those bound by its own binder, when it is
-    higher-ranked - do not induce outlives constraints on the value itself and
-    do not correspond to loans that could be projected into an abstraction.
+    The justification is that a function-item type is zero-sized: its unique
+    inhabitant is a compile-time constant (the function itself), which cannot
+    alias the caller's data. It therefore holds no borrow, so the regions
+    appearing in its type - including those bound by its own binder, when it is
+    higher-ranked - describe the signature of a function you may later call, not
+    storage the value currently holds. Aeneas's region machinery only tracks the
+    latter. The former is re-read from the callee's own signature at the call
+    site, so nothing is lost.
 
-    This is an approximation: we do not check that the regions bound by the
-    binder are unrelated to the regions of the enclosing signature. See the
-    comment on the [TFnDef] case of
+    Note this argument does NOT extend to function-pointer ([TFnPtr]) types,
+    which are not zero-sized; those are deliberately still rejected.
+
+    This is an approximation in one respect: we do not check that the regions
+    bound by the binder are unrelated to the regions of the enclosing signature.
+    See the comment on the [TFnDef] case of
     [RegionsHierarchy.compute_regions_hierarchy_for_sig] for why that check
-    cannot currently be expressed. As for dynamic traits, we guard all the
-    checks with this boolean so that it is easy to activate them. *)
+    cannot currently be expressed.
+
+    As for dynamic traits, every relaxation is guarded by this boolean, so
+    setting it to [false] restores the original strict checks and reveals all
+    the places that rely on the approximation. The guarded sites are the three
+    visitors in [TypesUtils], the [TFnDef] case of
+    [RegionsHierarchy.compute_regions_hierarchy_for_sig], and the [TFnDef] case
+    of [TypesAnalysis.analyze]. *)
 let type_analysis_ignore_fn_types = true
 
-(** We currently ignore the regions inside function-item and function-pointer
-    types: once we take them into account, remove this boolean: this will reveal
-    the places that need to be updated. *)
+(** We currently ignore the regions inside function-item types: once we take
+    them into account, remove this boolean: this will reveal the places that
+    need to be updated. *)
 let use_fn_type_regions = false
 
 (** When analyzing an opaque type about which we have no information, should we

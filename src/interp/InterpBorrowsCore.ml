@@ -479,10 +479,14 @@ let rec compare_rtys ?(allow_erased = false) (span : Meta.span) (ctx : eval_ctx)
       (* TODO: this is wrong, we need to compare the regions inside TDyn *)
       [%cassert] span (not Config.use_dyn_regions) "Unimplemented";
       default
-  | TFnDef _, TFnDef _ | TFnPtr _, TFnPtr _ ->
-      (* Function-item and function-pointer types are zero-sized and carry no
-         borrows, so their projections never intersect: return [default], like
+  | TFnDef _, TFnDef _ ->
+      (* A function-item type is zero-sized: its unique inhabitant is a
+         compile-time constant that cannot alias the caller's data, so it holds
+         no borrow and its projections never intersect. Return [default], like
          [TDynTrait] above.
+
+         Deliberately not extended to [TFnPtr], which is not zero-sized and so
+         needs its own justification; it is rejected elsewhere anyway.
 
          TODO: like for [TDynTrait], this ignores the regions inside the type.
          That is sound as long as such a value holds no loan, which is the case

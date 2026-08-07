@@ -394,9 +394,7 @@ and translate_function_call_aux (call : S.call) (e : S.expr) (ctx : bs_ctx) :
           let uninst_output =
             match fid with
             | FunId (FRegular fid) ->
-                let decl =
-                  FunDeclId.Map.find fid ctx.fun_ctx.llbc_fun_decls
-                in
+                let decl = FunDeclId.Map.find fid ctx.fun_ctx.llbc_fun_decls in
                 Option.value ~default:sg.output
                   (uninst_output_override_of_src decls_ctx decl.src)
             | _ -> sg.output
