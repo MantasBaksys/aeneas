@@ -1105,6 +1105,18 @@ and eval_switch_raw (config : config) (span : Meta.span) (switch : switch) :
                       (fun (vl, st) -> List.map (fun v -> (v, st)) vl)
                       stgts))
             in
+            (* The branch match values of a [SwitchInt] must be scalars. If one
+               of them is not (which can happen for switches Aeneas does not
+               fully support, e.g. on non-integer literals), raise a recoverable
+               error rather than let Charon raise a raw [Failure] — this keeps
+               the failure local to this function instead of aborting the whole
+               crate. *)
+            [%cassert] span
+              (List.for_all
+                 (fun (v : literal) ->
+                   match v with VScalar _ -> true | _ -> false)
+                 values)
+              "Unsupported [SwitchInt]: the branch values are not all scalars";
             (* Expand the symbolic value *)
             let (ctx_branches, ctx_otherwise), cf_int =
               expand_symbolic_int span sv

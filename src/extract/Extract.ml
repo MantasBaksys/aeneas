@@ -975,7 +975,10 @@ and extract_function_call (span : Meta.span) (ctx : extraction_ctx)
       | FromLlbc (TraitMethod (trait_ref, method_name), lp_id) ->
           let trait_decl_id = trait_ref.trait_decl_ref.trait_decl_id in
           let trait_decl =
-            TraitDeclId.Map.find trait_decl_id ctx.trans_trait_decls
+            [%unwrap_with_span] span
+              (TraitDeclId.Map.find_opt trait_decl_id ctx.trans_trait_decls)
+              "Could not find the translated trait declaration (it likely \
+               failed to translate)"
           in
 
           [%sanity_check] trait_decl.item_meta.span (lp_id = None);
@@ -1016,8 +1019,12 @@ and extract_function_call (span : Meta.span) (ctx : extraction_ctx)
           | FromLlbc (TraitMethod (trait_ref, method_id), lp_id) -> begin
               [%sanity_check] span (lp_id = None);
               let trait_decl =
-                TraitDeclId.Map.find trait_ref.trait_decl_ref.trait_decl_id
-                  ctx.trans_trait_decls
+                [%unwrap_with_span] span
+                  (TraitDeclId.Map.find_opt
+                     trait_ref.trait_decl_ref.trait_decl_id
+                     ctx.trans_trait_decls)
+                  "Could not find the translated trait declaration (it likely \
+                   failed to translate)"
               in
               let meth =
                 List.find
@@ -3455,7 +3462,12 @@ let extract_trait_impl (ctx : extraction_ctx) (fmt : F.formatter)
   (* Print a comment to link the extracted type to its original rust definition *)
   begin
     let decl_id = impl.impl_trait.trait_decl_id in
-    let trait_decl = TraitDeclId.Map.find decl_id ctx.trans_trait_decls in
+    let trait_decl =
+      [%unwrap_with_span] span
+        (TraitDeclId.Map.find_opt decl_id ctx.trans_trait_decls)
+        "Could not find the translated trait declaration (it likely failed to \
+         translate)"
+    in
     let decl_ref = impl.llbc_impl_trait in
     let name = trait_decl.item_meta.name in
     let generics = (impl.llbc_generics, decl_ref.generics) in
@@ -3529,7 +3541,12 @@ let extract_trait_impl (ctx : extraction_ctx) (fmt : F.formatter)
      See the comment in {!extract_trait_decl}. *)
   let ctx =
     let decl_id = impl.impl_trait.trait_decl_id in
-    let trait_decl = TraitDeclId.Map.find decl_id ctx.trans_trait_decls in
+    let trait_decl =
+      [%unwrap_with_span] span
+        (TraitDeclId.Map.find_opt decl_id ctx.trans_trait_decls)
+        "Could not find the translated trait declaration (it likely failed to \
+         translate)"
+    in
     let field_names =
       List.map
         (fun (const_id, _, _) -> ctx_get_trait_const span decl_id const_id ctx)

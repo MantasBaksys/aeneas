@@ -1288,6 +1288,19 @@ let eval_rvalue_aggregate (config : config) (span : Meta.span)
             [%sanity_check] span
               (List.length type_decl.generics.regions
               = List.length generics.regions);
+            (* We can only compute the fields of a transparent (struct/enum/union)
+               type. If the definition is opaque, an alias, or was produced from
+               an extraction error, we cannot evaluate the aggregate: raise a
+               recoverable error (rather than let Charon raise a raw
+               [Invalid_argument]) so that only this function's translation
+               fails, instead of aborting the whole crate. *)
+            (match type_decl.kind with
+            | Struct _ | Enum _ | Union _ -> ()
+            | Opaque | Alias _ | TDeclError _ ->
+                [%craise] span
+                  ("Cannot evaluate an aggregate for the non-transparent type '"
+                 ^ name_to_string ctx type_decl.item_meta.name
+                 ^ "' (its fields are not available)"));
             let expected_field_types =
               ctx_type_get_instantiated_field_etypes span ctx def_id
                 opt_variant_id generics
