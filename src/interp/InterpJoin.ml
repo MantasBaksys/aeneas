@@ -1515,9 +1515,132 @@ let match_ctx_with_target (config : config) (span : Meta.span)
     ^ "\n- joined_ctx:\n"
     ^ eval_ctx_to_string joined_ctx];
 
+  let ids_sets_disjoint (ids0 : ids_sets) (ids1 : ids_sets) : bool =
+    AbsId.Set.disjoint ids0.aids ids1.aids
+    && BorrowId.Set.disjoint ids0.blids ids1.blids
+    && BorrowId.Set.disjoint ids0.borrow_ids ids1.borrow_ids
+    && UniqueBorrowIdSet.disjoint ids0.unique_borrow_ids ids1.unique_borrow_ids
+    && BorrowId.Set.disjoint ids0.non_unique_shared_borrow_ids
+         ids1.non_unique_shared_borrow_ids
+    && SharedBorrowId.Set.disjoint ids0.shared_borrow_ids ids1.shared_borrow_ids
+    && BorrowId.Set.disjoint ids0.loan_ids ids1.loan_ids
+    && DummyVarId.Set.disjoint ids0.dids ids1.dids
+    && RegionId.Set.disjoint ids0.rids ids1.rids
+    && SymbolicValueId.Set.disjoint ids0.sids ids1.sids
+  in
+
+  let contract_local_reborrows (src_ctx : eval_ctx) (joined_ctx : eval_ctx) :
+      eval_ctx =
+    let src_ids, _ = compute_ctx_ids src_ctx in
+    let count_borrow_loan_occurrences (env : env) (id : BorrowId.id) : int * int
+        =
+      let borrow_count = ref 0 in
+      let loan_count = ref 0 in
+      let visitor =
+        object
+          inherit [_] iter_env as super
+
+          method! visit_borrow_id env bid =
+            if bid = id then borrow_count := !borrow_count + 1;
+            super#visit_borrow_id env bid
+
+          method! visit_loan_id env lid =
+            if lid = id then loan_count := !loan_count + 1;
+            super#visit_loan_id env lid
+        end
+      in
+      visitor#visit_env () env;
+      (!borrow_count, !loan_count)
+    in
+    let contract_one (ctx : eval_ctx) : eval_ctx option =
+      (* Contract an isolated eta-expanded local reborrow:
+         local ML@outer + abs { MB@outer; ML@inner } + local MB@inner
+         is equivalent to the direct local ML/MB pair obtained by renaming
+         inner to outer, but only when the two ids occur nowhere else. *)
+      let candidate (abs : abs) : (BorrowId.id * BorrowId.id) option =
+        let classify (av : tavalue) =
+          match av.value with
+          | ABorrow (AMutBorrow (PNone, bid, child))
+            when is_aignored child.value -> Some (`Borrow bid)
+          | ALoan (AMutLoan (PNone, lid, child)) when is_aignored child.value ->
+              Some (`Loan lid)
+          | _ -> None
+        in
+        match List.filter_map classify abs.avalues with
+        | [ `Borrow outer_bid; `Loan inner_bid ]
+        | [ `Loan inner_bid; `Borrow outer_bid ] ->
+            let abs_ids, _ = compute_abs_ids abs in
+            if
+              abs.can_end
+              && AbsId.Set.is_empty abs.parents
+              && AbsLevelSet.is_empty abs.ended_subabs
+              && outer_bid <> inner_bid
+              && ids_sets_disjoint abs_ids src_ids
+              && List.length abs.avalues = 2
+            then Some (outer_bid, inner_bid)
+            else None
+        | _ -> None
+      in
+      let rec find = function
+        | [] -> None
+        | EAbs abs :: _ when Option.is_some (candidate abs) -> Some abs
+        | _ :: env -> find env
+      in
+      match find ctx.env with
+      | None -> None
+      | Some abs ->
+          let outer_bid, inner_bid = [%silent_unwrap] span (candidate abs) in
+          let env_without_abs =
+            List.filter
+              (function
+                | EAbs abs' -> abs'.abs_id <> abs.abs_id
+                | _ -> true)
+              ctx.env
+          in
+          let outer_borrows, outer_loans =
+            count_borrow_loan_occurrences env_without_abs outer_bid
+          in
+          let inner_borrows, inner_loans =
+            count_borrow_loan_occurrences env_without_abs inner_bid
+          in
+          if
+            outer_borrows = 0 && outer_loans = 1 && inner_borrows = 1
+            && inner_loans = 0
+          then (
+            let subst =
+              object
+                inherit [_] map_env as super
+
+                method! visit_borrow_id env bid =
+                  let bid = if bid = inner_bid then outer_bid else bid in
+                  super#visit_borrow_id env bid
+
+                method! visit_loan_id env lid =
+                  let lid = if lid = inner_bid then outer_bid else lid in
+                  super#visit_loan_id env lid
+              end
+            in
+            let env = subst#visit_env () env_without_abs in
+            [%ltrace
+              "Contracted local reborrow abstraction before final context \
+               match: " ^ AbsId.to_string abs.abs_id ^ ", "
+              ^ BorrowId.to_string inner_bid
+              ^ " -> "
+              ^ BorrowId.to_string outer_bid];
+            Some { ctx with env })
+          else None
+    in
+    let rec repeat ctx =
+      match contract_one ctx with
+      | None -> ctx
+      | Some ctx -> repeat ctx
+    in
+    repeat joined_ctx
+  in
+
   (* Check that the source context (i.e., the fixed-point context) matches
      the resulting target context. *)
-  let src_to_joined_maps =
+  let joined_ctx, src_to_joined_maps =
     let open InterpBorrowsCore in
     let lookup_shared_loan lid ctx : tvalue =
       match snd (ctx_lookup_loan span ek_all lid ctx) with
@@ -1528,18 +1651,24 @@ let match_ctx_with_target (config : config) (span : Meta.span)
       | _ -> [%craise] span "Unreachable"
     in
     let lookup_in_src id = lookup_shared_loan id src_ctx in
-    let lookup_in_joined id = lookup_shared_loan id joined_ctx in
     (* Match *)
     let fixed_ids =
       { empty_ids_sets with aids = ctx_get_frozen_abs_set src_ctx }
     in
-    match
+    let try_match joined_ctx =
+      let lookup_in_joined id = lookup_shared_loan id joined_ctx in
       try_match_ctxs span ~check_equiv:false ~check_kind:false
         ~check_can_end:false fixed_ids lookup_in_src lookup_in_joined src_ctx
         joined_ctx
-    with
-    | Some ctx -> ctx
-    | None -> [%craise] span "Could not match the contexts"
+    in
+    match try_match joined_ctx with
+    | Some maps -> (joined_ctx, maps)
+    | None -> (
+        let joined_ctx = contract_local_reborrows src_ctx joined_ctx in
+        match try_match joined_ctx with
+        | Some maps -> (joined_ctx, maps)
+        | None ->
+            [%craise_recover] recoverable span "Could not match the contexts")
   in
   [%ltrace
     "The match was successful:" ^ "\n\n- src_ctx: "

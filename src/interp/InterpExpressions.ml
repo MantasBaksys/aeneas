@@ -1026,6 +1026,24 @@ let eval_binary_op_concrete_compute (span : Meta.span) (binop : binop)
         | _ ->
             [%craise] span ("Invalid inputs for binop: " ^ binop_to_string binop)
       end
+    | VLiteral (VChar c1), VLiteral (VChar c2) -> begin
+        (* Characters only support the comparison operations; they are ordered
+           by their Unicode scalar value (matching Rust's [char] ordering). *)
+        match binop with
+        | Lt | Le | Ge | Gt ->
+            let cmp = Uchar.compare c1 c2 in
+            let b =
+              match binop with
+              | Lt -> cmp < 0
+              | Le -> cmp <= 0
+              | Ge -> cmp >= 0
+              | Gt -> cmp > 0
+              | _ -> [%craise] span "Unreachable"
+            in
+            Ok ({ value = VLiteral (VBool b); ty = TLiteral TBool } : tvalue)
+        | _ ->
+            [%craise] span ("Invalid inputs for binop: " ^ binop_to_string binop)
+      end
     | VLiteral (VScalar sv1), VLiteral (VScalar sv2) -> begin
         let sv1_value, sv2_value = (get_val sv1, get_val sv2) in
         let sv1_int_ty, sv2_int_ty = (get_ty sv1, get_ty sv2) in
@@ -1134,6 +1152,10 @@ let eval_binary_op_symbolic (config : config) (span : Meta.span) (binop : binop)
       | TLiteral TBool, TLiteral TBool
         when binop = Lt || binop = Le || binop = Ge || binop = Gt
              || binop = BitAnd || binop = BitOr || binop = BitXor ->
+          TLiteral TBool
+      | TLiteral TChar, TLiteral TChar
+        when binop = Lt || binop = Le || binop = Ge || binop = Gt ->
+          (* Characters are ordered (by Unicode scalar value) *)
           TLiteral TBool
       | TLiteral lty1, TLiteral lty2
         when literal_type_is_integer lty1 && literal_type_is_integer lty2 -> (
