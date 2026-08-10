@@ -1,5 +1,5 @@
 [[92mInfo[39m ] Imported: tests/llbc/loops_early_return_nested.llbc
-[[91mError[39m] Early returns out of nested loops are not supported yet: a `return` occurs inside a loop that is itself nested at least two levels deep. Propagating an early return out through several enclosing loops requires control-flow flattening (a synthetic exit-reason threaded out of each loop), which Aeneas does not implement yet.
-Source: 'tests/src/loops-early-return-nested.rs', lines 15:0-28:1
-Compiler source: PrePasses.ml, line 683
+[[91mError[39m] There should be no bottoms in the value
+Source: 'tests/src/loops-early-return-nested.rs', lines 25:8-25:14
+Compiler source: interp/InterpExpressions.ml, line 55
 

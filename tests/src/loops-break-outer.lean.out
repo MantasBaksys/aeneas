@@ -1,5 +1,0 @@
-[[92mInfo[39m ] Imported: tests/llbc/loops_break_outer.llbc
-[[91mError[39m] Breaks to outer loops are not supported yet: a `break` targets an enclosing loop other than the innermost one (`break i` with i>0, i.e. a labelled `break 'outer`). Non-local exits out of nested loops require control-flow flattening (a synthetic exit-reason threaded out of the loop), which Aeneas does not implement yet.
-Source: 'tests/src/loops-break-outer.rs', lines 15:0-30:1
-Compiler source: PrePasses.ml, line 662
-
