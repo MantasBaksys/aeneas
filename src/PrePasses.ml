@@ -733,6 +733,101 @@ let update_loops (crate : crate) (f : fun_decl) : fun_decl =
         in
         { body with body = visitor#visit_block () body.body }
     in
+    (* Non-local control-flow flattening (the transformations below) reconstructs
+       a loop's non-local exits (early [return], [break]/[continue] to an outer
+       loop) by threading synthetic boolean flags and re-raising the exit after
+       the loop. This is sound only when the loop's carried state is borrow-free:
+       the symbolic interpreter joins the break contexts of every exit site of a
+       loop, and if a value that carries a borrow (e.g. an iterator holding
+       [&[T]], or a [&mut]/[&] local) is live across a non-local exit, the join
+       must reconcile a loan over a borrow-containing value across paths that the
+       interpreter cannot express (it restricts loops to innermost control flow
+       precisely because of this). Naively flattening such a loop makes the
+       downstream fixed-point join fail deep in the pipeline (surfacing as an
+       opaque internal error and a [sorry] body) instead of an honest rejection.
+
+       We therefore detect loops whose carried state crosses a borrow over a
+       non-local exit and reject them here, cleanly, before any rewriting. The
+       borrow-free case (scalars, owned data) is fully supported. *)
+    let ty_has_borrow (ty : ty) : bool =
+      let found = ref false in
+      let visited = ref TypeDeclId.Set.empty in
+      let rec go (ty : ty) : unit =
+        if !found then ()
+        else
+          match ty with
+          | TRef _ | TRawPtr _ -> found := true
+          | TAdt { id = TTuple; generics } -> List.iter go generics.types
+          | TAdt { id = TBuiltin _; generics } -> List.iter go generics.types
+          | TAdt { id = TAdtId def_id; generics } ->
+              (* Borrows may appear either as type arguments (e.g.
+                 [PhantomData<&'a T>]) or inside the declaration's own fields
+                 (e.g. [slice::Iter] stores a raw pointer into the borrowed
+                 slice), so we follow both, memoising on the declaration id to
+                 terminate on recursive types. *)
+              List.iter go generics.types;
+              if (not !found) && not (TypeDeclId.Set.mem def_id !visited) then begin
+                visited := TypeDeclId.Set.add def_id !visited;
+                match TypeDeclId.Map.find_opt def_id crate.type_decls with
+                | Some ({ kind = Struct _; _ } as def) ->
+                    let field_tys =
+                      Substitute.type_decl_get_instantiated_field_etypes def
+                        None generics
+                    in
+                    List.iter go field_tys
+                | Some ({ kind = Enum variants; _ } as def) ->
+                    List.iter
+                      (fun (v : variant) ->
+                        let field_tys =
+                          Substitute.type_decl_get_instantiated_field_etypes def
+                            (Some v.id) generics
+                        in
+                        List.iter go field_tys)
+                      variants
+                | _ -> ()
+              end
+          | TArray (t, _) | TSlice t -> go t
+          | _ -> ()
+      in
+      go ty;
+      !found
+    in
+    let local_tys =
+      List.fold_left
+        (fun m (local : local) -> LocalId.Map.add local.index local.local_ty m)
+        LocalId.Map.empty body.locals.locals
+    in
+    let rec place_root (p : place) : LocalId.id option =
+      match p.kind with
+      | PlaceLocal id -> Some id
+      | PlaceProjection (p, _) -> place_root p
+      | PlaceGlobal _ -> None
+    in
+    (* Does a (top-level, i.e. not nested) loop body reference a local whose type
+       carries a borrow? Only the current loop's own statements are inspected
+       (depth 0): a borrow living entirely inside a nested inner loop does not
+       cross this loop's exit. *)
+    let loop_refs_borrow (lb : block) : bool =
+      let found = ref false in
+      let visitor =
+        object
+          inherit [_] iter_statement as super
+          method! visit_Loop depth loop = super#visit_Loop (depth + 1) loop
+
+          method! visit_place depth p =
+            (if depth = 0 then
+               match place_root p with
+               | Some id -> (
+                   match LocalId.Map.find_opt id local_tys with
+                   | Some ty -> if ty_has_borrow ty then found := true
+                   | None -> ())
+               | None -> ());
+            super#visit_place depth p
+        end
+      in
+      visitor#visit_block 0 lb;
+      !found
+    in
     let loop_exit_eq (e0 : loop_exit) (e1 : loop_exit) : bool =
       match (e0, e1) with
       | LoopReturn, LoopReturn -> true
@@ -875,6 +970,27 @@ let update_loops (crate : crate) (f : fun_decl) : fun_decl =
               (Switch (If (Copy (mk_bool_place id), then_block, else_block)))
           in
           let exits = List.rev !exits in
+          (* The exit-flattening above is sound only when the loop's carried
+             state is borrow-free. The symbolic interpreter joins the break
+             contexts of every exit site of a loop; if a value that carries a
+             borrow (e.g. an iterator holding [&[T]], or a [&]/[&mut] local) is
+             live across one of the synthesised non-local exits, the join must
+             reconcile a loan over a borrow-containing value across paths the
+             interpreter cannot express (this is exactly why loops are otherwise
+             restricted to innermost control flow). Naively flattening such a
+             loop makes a downstream fixed-point join fail deep in the pipeline
+             (an opaque internal error and a [sorry] body) instead of an honest
+             rejection. We only reach here when genuine non-local exits were
+             flattened ([exits <> []]); the borrow-free case (scalars, owned
+             data) — including tail-position returns handled above without
+             populating [exits] — is fully supported. *)
+          if exits <> [] && loop_refs_borrow loop then
+            [%craise] span
+              "Non-local control flow (early return, or break/continue to an \
+               outer loop) out of a loop that carries a borrow across the exit \
+               is not supported yet: the loop's break-context join cannot \
+               reconcile a loan over a borrow-containing value across the \
+               synthesised non-local exit paths.";
           let init =
             List.map (fun (_, id) -> mk_set_bool span id false) exits
           in
@@ -935,16 +1051,27 @@ let update_loops (crate : crate) (f : fun_decl) : fun_decl =
           (match st.kind with
           | Return when depth > 0 ->
               [%craise] st.span
-                "Early returns inside of loops are not supported yet"
+                "Early returns inside of loops are not supported yet: a \
+                 `return` survived control-flow flattening (it could not be \
+                 rewritten into a synthetic exit-reason threaded out of the \
+                 loop). This typically happens when the loop carries state \
+                 that the exit-reason encoding cannot reconcile across paths."
           | _ -> ());
           super#visit_statement depth st
 
         method! visit_Break _ i =
-          [%cassert] span (i = 0) "Breaks to outer loops are not supported yet"
+          [%cassert] span (i = 0)
+            "Breaks to outer loops are not supported yet: a `break i` with i>0 \
+             (a labelled `break 'outer`) survived control-flow flattening. \
+             Only breaks to the innermost loop (`break 0`) are expressible \
+             after flattening."
 
         method! visit_Continue _ i =
           [%cassert] span (i = 0)
-            "Continue to outer loops are not supported yet"
+            "Continue to outer loops are not supported yet: a `continue i` \
+             with i>0 (a labelled `continue 'outer`) survived control-flow \
+             flattening. Only continues to the innermost loop (`continue 0`) \
+             are expressible after flattening."
       end
     in
     check_visitor#visit_block 0 body.body;
