@@ -10,7 +10,12 @@ fn call_fn_shared(a: &[u8], i: usize) -> u8 {
     read(i)
 }
 
-// TODO: monomorphisation in Charon
+// A closure that CAPTURES a `&mut` borrow. This needs Charon's
+// `--monomorphize-mut=except-types` (so the `Fn*` traits are specialized and
+// the captured-`&mut` back type is present at clause-translation time), which
+// is not enabled for this test file. The dedicated reproducer with the right
+// `charon-args` lives in `closures_mut_captures.rs` (both a 1-capture and a
+// 2-capture case), so we don't duplicate it here.
 /*
 fn call_fn_mut(a: &mut [u8], i: usize) {
     let mut write = |i: usize| { a[i] = 0 };
