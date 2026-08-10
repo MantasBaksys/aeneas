@@ -1133,9 +1133,22 @@ and translate_end_abstraction_fun_call (ectx : C.eval_ctx) (abs : V.abs)
     (* Put everything together *)
     let args = List.map (mk_opt_mplace_texpr None) back_inputs in
     (* The backward function might have been filtered if it does nothing
-     (consumes unit and returns unit). *)
+     (consumes unit and returns unit), or if it is a redundant closure
+     capture-region backward function (see [closure_capture_back_gids] in
+     [SymbolicToPureTypes.translate_inst_fun_sig_to_decomposed_fun_type]). *)
     match info with
-    | None -> next_e ctx
+    | None when outputs = [] -> next_e ctx
+    | None ->
+        (* The backward function was dropped even though this abstraction gives
+           back values: this only happens for a filtered closure capture region.
+           Such a backward function is the identity on the returned closure
+           state - it hands back exactly the value it consumed (the updated
+           [Self]), from which the caller projects the captured borrow. We
+           therefore bind the given-back pattern directly to the consumed
+           inputs, dropping the (identity) call. *)
+        let bound = mk_simpl_tuple_texpr ctx.span back_inputs in
+        let ctx, (output, bound) = decompose_let_match ctx output bound in
+        [%add_loc] mk_closed_checked_let ctx false output bound (next_e ctx)
     | Some info ->
         [%ltrace
           let args = List.map (texpr_to_string ctx) args in
