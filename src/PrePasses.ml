@@ -527,6 +527,212 @@ let update_loops (crate : crate) (f : fun_decl) : fun_decl =
       mk_statement ~span:st_span
         (Assign (mk_bool_place id, Use (Constant cv, NoRetag)))
     in
+    let mk_place (id : LocalId.id) (ty : ty) : place =
+      { kind = PlaceLocal id; ty }
+    in
+    let mk_move_place (id : LocalId.id) (ty : ty) : operand =
+      Move (mk_place id ty)
+    in
+    let mk_dummy_initializers (st_span : Meta.span) (dest : place) (ty : ty) :
+        statement list option =
+      let ty_contains_ref (ty : ty) : bool =
+        let found = ref false in
+        let visitor =
+          object
+            inherit [_] iter_ty as super
+            method! visit_TRef _ _ _ _ = found := true
+            method! visit_TRawPtr _ _ _ = found := true
+            method! visit_TDynTrait _ _ = found := true
+            method! visit_TFnPtr _ _ = found := true
+            method! visit_TFnDef _ _ = found := true
+
+            method! visit_TAdt env tref =
+              (match tref.id with
+              | TAdtId def_id -> (
+                  match TypeDeclId.Map.find_opt def_id crate.type_decls with
+                  | Some { kind = Struct _ | Enum _; _ } -> ()
+                  | _ -> found := true)
+              | _ -> ());
+              (* Still visit generic arguments: [Option<unsupported>] can be
+                 built as [None], but introducing such a dummy makes downstream
+                 extraction demand declarations that were otherwise irrelevant. *)
+              super#visit_TAdt env tref
+          end
+        in
+        visitor#visit_ty () ty;
+        !found
+      in
+      let rec mk_dummy_operand (ty : ty) : (statement list * operand) option =
+        if ty_contains_ref ty then None
+        else
+          match ty with
+          | TLiteral lit_ty ->
+              let lit =
+                match lit_ty with
+                | TBool -> Some (Values.VBool false)
+                | TChar -> None
+                | TFloat _ -> None
+                | TInt int_ty ->
+                    Some (Values.VScalar (Values.SignedScalar (int_ty, Z.zero)))
+                | TUInt uint_ty ->
+                    Some
+                      (Values.VScalar (Values.UnsignedScalar (uint_ty, Z.zero)))
+              in
+              Option.map
+                (fun lit ->
+                  let cv : constant_expr = { kind = CLiteral lit; ty } in
+                  ([], Constant cv))
+                lit
+          | TAdt { id = TTuple; generics } ->
+              mk_dummy_aggregate_from_tys ty
+                (AggregatedAdt ({ id = TTuple; generics }, None, None))
+                generics.types
+          | TAdt { id = TAdtId def_id; generics } -> (
+              let def =
+                [%silent_unwrap_opt_span] (Some st_span)
+                  (TypeDeclId.Map.find_opt def_id crate.type_decls)
+              in
+              match def.kind with
+              | Struct _ ->
+                  let field_tys =
+                    Substitute.type_decl_get_instantiated_field_etypes def None
+                      generics
+                  in
+                  mk_dummy_aggregate_from_tys ty
+                    (AggregatedAdt ({ id = TAdtId def_id; generics }, None, None))
+                    field_tys
+              | Enum variants -> (
+                  match variants with
+                  | [] -> None
+                  | variant :: _ ->
+                      let field_tys =
+                        Substitute.type_decl_get_instantiated_field_etypes def
+                          (Some variant.id) generics
+                      in
+                      mk_dummy_aggregate_from_tys ty
+                        (AggregatedAdt
+                           ( { id = TAdtId def_id; generics },
+                             Some variant.id,
+                             None ))
+                        field_tys)
+              | Union _ | Opaque | Alias _ | TDeclError _ -> None)
+          | TArray (field_ty, len) -> (
+              match (len.kind, mk_dummy_operand field_ty) with
+              | ( CLiteral (Values.VScalar (Values.UnsignedScalar (Usize, n))),
+                  Some ([], op) )
+                when Z.leq Z.zero n && Z.leq n (Z.of_int 1024) ->
+                  let ops = List.init (Z.to_int n) (fun _ -> op) in
+                  mk_dummy_aggregate ty (AggregatedArray (field_ty, len)) ops
+              | _ -> None)
+          | _ -> None
+      and mk_dummy_aggregate_from_tys (ty : ty) (kind : aggregate_kind)
+          (field_tys : ty list) : (statement list * operand) option =
+        let fields = List.map mk_dummy_operand field_tys in
+        if List.exists Option.is_none fields then None
+        else
+          let fields = List.map (fun x -> [%silent_unwrap] st_span x) fields in
+          let mk_field field_ty (field_stmts, field_op) =
+            let tmp = fresh_local field_ty (Some "aeneas_dummy") in
+            let tmp_place = mk_place tmp field_ty in
+            ( field_stmts
+              @ [
+                  mk_statement ~span:st_span
+                    (Assign (tmp_place, Use (field_op, NoRetag)));
+                ],
+              mk_move_place tmp field_ty )
+          in
+          let field_stmts, field_ops =
+            List.split (List.map2 mk_field field_tys fields)
+          in
+          let tmp = fresh_local ty (Some "aeneas_dummy") in
+          let tmp_place = mk_place tmp ty in
+          let stmts =
+            List.flatten field_stmts
+            @ [
+                mk_statement ~span:st_span
+                  (Assign (tmp_place, Aggregate (kind, field_ops)));
+              ]
+          in
+          Some (stmts, mk_move_place tmp ty)
+      and mk_dummy_aggregate (ty : ty) (kind : aggregate_kind)
+          (field_ops : operand list) : (statement list * operand) option =
+        let tmp = fresh_local ty (Some "aeneas_dummy") in
+        let tmp_place = mk_place tmp ty in
+        let stmts =
+          [
+            mk_statement ~span:st_span
+              (Assign (tmp_place, Aggregate (kind, field_ops)));
+          ]
+        in
+        Some (stmts, mk_move_place tmp ty)
+      in
+      match mk_dummy_operand ty with
+      | None -> None
+      | Some (stmts, op) ->
+          Some
+            (stmts
+            @ [ mk_statement ~span:st_span (Assign (dest, Use (op, NoRetag))) ]
+            )
+    in
+    let body_has_nonlocal_loop_exit (body : block) : bool =
+      let found = ref false in
+      let visitor =
+        object
+          inherit [_] iter_statement as super
+          method! visit_Loop depth loop = super#visit_Loop (depth + 1) loop
+
+          method! visit_statement depth st =
+            (match st.kind with
+            | Return when depth > 0 -> found := true
+            | (Break i | Continue i) when i > 0 -> found := true
+            | _ -> ());
+            super#visit_statement depth st
+        end
+      in
+      visitor#visit_block 0 body;
+      !found
+    in
+    let initialize_storage_live (body : block gexpr_body) : block gexpr_body =
+      if not (body_has_nonlocal_loop_exit body.body) then body
+      else
+        let locals =
+          List.fold_left
+            (fun locals (local : local) ->
+              LocalId.Map.add local.index local locals)
+            LocalId.Map.empty body.locals.locals
+        in
+        let visitor =
+          object
+            inherit [_] map_statement_base as super
+
+            method! visit_block env b =
+              let b = super#visit_block env b in
+              let update st =
+                match st.kind with
+                | StorageLive id ->
+                    let local =
+                      [%silent_unwrap_opt_span] (Some st.span)
+                        (LocalId.Map.find_opt id locals)
+                    in
+                    let place = mk_place id local.local_ty in
+                    let init =
+                      match
+                        mk_dummy_initializers st.span place local.local_ty
+                      with
+                      | None -> []
+                      | Some init -> init
+                    in
+                    st :: init
+                | _ -> [ st ]
+              in
+              {
+                b with
+                statements = List.flatten (List.map update b.statements);
+              }
+          end
+        in
+        { body with body = visitor#visit_block () body.body }
+    in
     let loop_exit_eq (e0 : loop_exit) (e1 : loop_exit) : bool =
       match (e0, e1) with
       | LoopReturn, LoopReturn -> true
@@ -708,6 +914,7 @@ let update_loops (crate : crate) (f : fun_decl) : fun_decl =
       end
     in
 
+    let body = initialize_storage_live body in
     let body = { body with body = visitor#visit_block 0 body.body } in
     let body =
       {

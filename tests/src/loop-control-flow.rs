@@ -28,6 +28,21 @@ pub fn return_from_nested_loop() -> u32 {
         }
     }
 }
+
+pub fn return_value_from_loop_with_break(stop: u32) -> u32 {
+    let mut i = 0;
+    loop {
+        if i == stop {
+            return i * 3 + 1;
+        }
+        if i == 5 {
+            break;
+        }
+        i += 1;
+    }
+    i + 20
+}
+
 pub fn continue_to_outer_loop() -> u32 {
     let mut acc = 0;
     let mut i = 0;
@@ -77,6 +92,16 @@ fn test_early_return_in_loop_break() {
 #[verify::test]
 fn test_return_from_nested_loop_hit() {
     assert!(return_from_nested_loop() == 1);
+}
+
+#[verify::test]
+fn test_return_value_from_loop_with_break_hit() {
+    assert!(return_value_from_loop_with_break(3) == 10);
+}
+
+#[verify::test]
+fn test_return_value_from_loop_with_break_fallthrough() {
+    assert!(return_value_from_loop_with_break(8) == 25);
 }
 
 #[verify::test]

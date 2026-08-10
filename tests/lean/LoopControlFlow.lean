@@ -72,8 +72,42 @@ def return_from_nested_loop : Result Std.U32 := do
   let inner ← return_from_nested_loop_loop 0#u32
   0#u32 + inner
 
+/-- [loop_control_flow::return_value_from_loop_with_break]: loop body 0:
+    Source: 'tests/src/loop-control-flow.rs', lines 34:4-44:1
+    Visibility: public -/
+@[rust_loop_body]
+def return_value_from_loop_with_break_loop.body
+  (stop : Std.U32) (i : Std.U32) : Result (ControlFlow Std.U32 Std.U32) := do
+  if i = stop
+  then let i1 ← i * 3#u32
+       let i2 ← i1 + 1#u32
+       ok (done i2)
+  else
+    if i = 5#u32
+    then let i1 ← i + 20#u32
+         ok (done i1)
+    else let i1 ← i + 1#u32
+         ok (cont i1)
+
+/-- [loop_control_flow::return_value_from_loop_with_break]: loop 0:
+    Source: 'tests/src/loop-control-flow.rs', lines 34:4-44:1
+    Visibility: public -/
+@[rust_loop]
+def return_value_from_loop_with_break_loop
+  (stop : Std.U32) (i : Std.U32) : Result Std.U32 := do
+  loop
+    (fun i1 => return_value_from_loop_with_break_loop.body stop i1)
+    i
+
+/-- [loop_control_flow::return_value_from_loop_with_break]:
+    Source: 'tests/src/loop-control-flow.rs', lines 32:0-44:1
+    Visibility: public -/
+@[reducible]
+def return_value_from_loop_with_break (stop : Std.U32) : Result Std.U32 := do
+  return_value_from_loop_with_break_loop stop 0#u32
+
 /-- [loop_control_flow::continue_to_outer_loop]: loop body 1:
-    Source: 'tests/src/loop-control-flow.rs', lines 1:0-46:5
+    Source: 'tests/src/loop-control-flow.rs', lines 1:0-61:5
     Visibility: public -/
 @[rust_loop_body]
 def continue_to_outer_loop_loop0_loop0.body
@@ -91,7 +125,7 @@ def continue_to_outer_loop_loop0_loop0.body
   else ok (done (acc, i, false))
 
 /-- [loop_control_flow::continue_to_outer_loop]: loop 1:
-    Source: 'tests/src/loop-control-flow.rs', lines 1:0-46:5
+    Source: 'tests/src/loop-control-flow.rs', lines 1:0-61:5
     Visibility: public -/
 @[rust_loop]
 def continue_to_outer_loop_loop0_loop0
@@ -103,7 +137,7 @@ def continue_to_outer_loop_loop0_loop0
     (acc, j)
 
 /-- [loop_control_flow::continue_to_outer_loop]: loop body 0:
-    Source: 'tests/src/loop-control-flow.rs', lines 1:0-46:5
+    Source: 'tests/src/loop-control-flow.rs', lines 1:0-61:5
     Visibility: public -/
 @[rust_loop_body]
 def continue_to_outer_loop_loop0.body
@@ -122,7 +156,7 @@ def continue_to_outer_loop_loop0.body
   else ok (done acc)
 
 /-- [loop_control_flow::continue_to_outer_loop]: loop 0:
-    Source: 'tests/src/loop-control-flow.rs', lines 1:0-46:5
+    Source: 'tests/src/loop-control-flow.rs', lines 1:0-61:5
     Visibility: public -/
 @[rust_loop]
 def continue_to_outer_loop_loop0
@@ -132,14 +166,14 @@ def continue_to_outer_loop_loop0
     (acc, i)
 
 /-- [loop_control_flow::continue_to_outer_loop]:
-    Source: 'tests/src/loop-control-flow.rs', lines 31:0-48:1
+    Source: 'tests/src/loop-control-flow.rs', lines 46:0-63:1
     Visibility: public -/
 @[reducible]
 def continue_to_outer_loop : Result Std.U32 := do
   continue_to_outer_loop_loop0 0#u32 0#i32
 
 /-- [loop_control_flow::break_to_outer_loop]: loop body 1:
-    Source: 'tests/src/loop-control-flow.rs', lines 1:0-63:5
+    Source: 'tests/src/loop-control-flow.rs', lines 1:0-78:5
     Visibility: public -/
 @[rust_loop_body]
 def break_to_outer_loop_loop0_loop0.body
@@ -161,7 +195,7 @@ def break_to_outer_loop_loop0_loop0.body
   else ok (done (acc, false))
 
 /-- [loop_control_flow::break_to_outer_loop]: loop 1:
-    Source: 'tests/src/loop-control-flow.rs', lines 1:0-63:5
+    Source: 'tests/src/loop-control-flow.rs', lines 1:0-78:5
     Visibility: public -/
 @[rust_loop]
 def break_to_outer_loop_loop0_loop0
@@ -171,7 +205,7 @@ def break_to_outer_loop_loop0_loop0
     (acc, j)
 
 /-- [loop_control_flow::break_to_outer_loop]: loop body 0:
-    Source: 'tests/src/loop-control-flow.rs', lines 1:0-63:5
+    Source: 'tests/src/loop-control-flow.rs', lines 1:0-78:5
     Visibility: public -/
 @[rust_loop_body]
 def break_to_outer_loop_loop0.body
@@ -189,7 +223,7 @@ def break_to_outer_loop_loop0.body
   else ok (done acc)
 
 /-- [loop_control_flow::break_to_outer_loop]: loop 0:
-    Source: 'tests/src/loop-control-flow.rs', lines 1:0-63:5
+    Source: 'tests/src/loop-control-flow.rs', lines 1:0-78:5
     Visibility: public -/
 @[rust_loop]
 def break_to_outer_loop_loop0
@@ -199,14 +233,14 @@ def break_to_outer_loop_loop0
     (acc, i)
 
 /-- [loop_control_flow::break_to_outer_loop]:
-    Source: 'tests/src/loop-control-flow.rs', lines 50:0-65:1
+    Source: 'tests/src/loop-control-flow.rs', lines 65:0-80:1
     Visibility: public -/
 @[reducible]
 def break_to_outer_loop : Result Std.U32 := do
   break_to_outer_loop_loop0 0#u32 0#i32
 
 /-- [loop_control_flow::test_early_return_in_loop_hit]:
-    Source: 'tests/src/loop-control-flow.rs', lines 68:0-70:1 -/
+    Source: 'tests/src/loop-control-flow.rs', lines 83:0-85:1 -/
 def test_early_return_in_loop_hit : Result Unit := do
   let i ← early_return_in_loop 2#u32
   massert (i = 12#u32)
@@ -215,7 +249,7 @@ def test_early_return_in_loop_hit : Result Unit := do
 #assert (test_early_return_in_loop_hit == ok ())
 
 /-- [loop_control_flow::test_early_return_in_loop_break]:
-    Source: 'tests/src/loop-control-flow.rs', lines 73:0-75:1 -/
+    Source: 'tests/src/loop-control-flow.rs', lines 88:0-90:1 -/
 def test_early_return_in_loop_break : Result Unit := do
   let i ← early_return_in_loop 8#u32
   massert (i = 4#u32)
@@ -224,7 +258,7 @@ def test_early_return_in_loop_break : Result Unit := do
 #assert (test_early_return_in_loop_break == ok ())
 
 /-- [loop_control_flow::test_return_from_nested_loop_hit]:
-    Source: 'tests/src/loop-control-flow.rs', lines 78:0-80:1 -/
+    Source: 'tests/src/loop-control-flow.rs', lines 93:0-95:1 -/
 def test_return_from_nested_loop_hit : Result Unit := do
   let i ← return_from_nested_loop
   massert (i = 1#u32)
@@ -232,8 +266,26 @@ def test_return_from_nested_loop_hit : Result Unit := do
 /- Unit test for [loop_control_flow::test_return_from_nested_loop_hit] -/
 #assert (test_return_from_nested_loop_hit == ok ())
 
+/-- [loop_control_flow::test_return_value_from_loop_with_break_hit]:
+    Source: 'tests/src/loop-control-flow.rs', lines 98:0-100:1 -/
+def test_return_value_from_loop_with_break_hit : Result Unit := do
+  let i ← return_value_from_loop_with_break 3#u32
+  massert (i = 10#u32)
+
+/- Unit test for [loop_control_flow::test_return_value_from_loop_with_break_hit] -/
+#assert (test_return_value_from_loop_with_break_hit == ok ())
+
+/-- [loop_control_flow::test_return_value_from_loop_with_break_fallthrough]:
+    Source: 'tests/src/loop-control-flow.rs', lines 103:0-105:1 -/
+def test_return_value_from_loop_with_break_fallthrough : Result Unit := do
+  let i ← return_value_from_loop_with_break 8#u32
+  massert (i = 25#u32)
+
+/- Unit test for [loop_control_flow::test_return_value_from_loop_with_break_fallthrough] -/
+#assert (test_return_value_from_loop_with_break_fallthrough == ok ())
+
 /-- [loop_control_flow::test_continue_to_outer_loop]:
-    Source: 'tests/src/loop-control-flow.rs', lines 83:0-85:1 -/
+    Source: 'tests/src/loop-control-flow.rs', lines 108:0-110:1 -/
 def test_continue_to_outer_loop : Result Unit := do
   let i ← continue_to_outer_loop
   massert (i = 60#u32)
@@ -242,7 +294,7 @@ def test_continue_to_outer_loop : Result Unit := do
 #assert (test_continue_to_outer_loop == ok ())
 
 /-- [loop_control_flow::test_break_to_outer_loop]:
-    Source: 'tests/src/loop-control-flow.rs', lines 88:0-90:1 -/
+    Source: 'tests/src/loop-control-flow.rs', lines 113:0-115:1 -/
 def test_break_to_outer_loop : Result Unit := do
   let i ← break_to_outer_loop
   massert (i = 9#u32)
