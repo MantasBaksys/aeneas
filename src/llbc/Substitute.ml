@@ -223,4 +223,6 @@ let type_decl_get_instantiated_variants_fields_types (span : Meta.span)
       generics
   in
   if !Config.fail_hard then subst ()
-  else try subst () with Failure _ -> [%craise] span "Unexpected error"
+  else
+    try subst ()
+    with Failure msg -> [%craise] span ("Unexpected error: " ^ msg)
