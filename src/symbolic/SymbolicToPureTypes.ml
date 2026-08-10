@@ -1143,9 +1143,21 @@ and translate_fun_sigs (span : span option) (decls_ctx : C.decls_ctx)
 
   let inst_sg : LlbcAst.inst_fun_sig =
     let ({ T.inputs; output; _ } : T.fun_sig) = sg.item_binder_value in
-    [%sanity_check_opt_span] span
-      (sg.item_binder_params.trait_type_constraints = []);
 
+    (* Note: we deliberately do NOT require [item_binder_params.trait_type_constraints]
+       to be empty here. This local [inst_sg] is only used to compute the regions
+       hierarchy and the decomposed signature *types*; trait-type-constraint
+       predicates (e.g. `<Self as Iterator>::Item = &'a T`, as introduced by the
+       `where`-clauses of provided methods such as `Iterator::copied`) play no role
+       in the regions hierarchy (they are predicates, not borrow-bearing types) so we
+       drop them for this local signature. They are preserved where they matter:
+       - the pure signature keeps them via [preds] below (from [translate_generic_params]);
+       - body symbolic execution reconstructs its own [inst_fun_sig] with the
+         constraints preserved (see [InterpUtils.instantiate_fun_sig]).
+       A blanket sanity check forbidding them here used to abort the translation of
+       any such signature, which in turn made whole trait declarations (notably
+       `core::iter::traits::iterator::Iterator`) fail and emit `sorry` into the
+       generated code. *)
     let _, fresh_abs_id = V.AbsId.fresh_stateful_generator () in
     let region_gr_id_abs_id_list =
       List.map
