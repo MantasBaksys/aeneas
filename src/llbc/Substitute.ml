@@ -7,6 +7,30 @@ open Types
 open Values
 open LlbcAst
 
+(* Charon's [erase_regions] only rewrites region *variables* (via [r_subst],
+   which is consulted from [visit_RVar]); the non-variable regions [RStatic] and
+   [RBody] are left untouched. That is not what we want when normalising a type
+   so it can be compared modulo regions, or when turning a signature type
+   ([rty]) into a value type ([ety]): every region must become [RErased],
+   otherwise a [&'static T] fails to compare equal to a [&'r T] whose region
+   variable was erased. This mismatch shows up, e.g., when type-checking the
+   arguments of a call whose signature mentions a 'static reference (values that
+   borrow a 'static reference keep [RStatic] in their type — see the 'static
+   handling in [InterpStatements.eval_global_as_fresh_symbolic_value]). We
+   therefore shadow the erasure with a visitor that rewrites *all* regions (this
+   matches [Contexts.erase_regions]).
+
+   Note: we deliberately do *not* shadow [erase_regions_substitute_types] the
+   same way — some callers (notably the global 'static-reference handling) rely
+   on [RStatic] surviving so they can pattern-match on [TRef (RStatic, ...)]. *)
+let region_erasing_visitor =
+  object
+    inherit [_] map_ty
+    method! visit_region _ _ = RErased
+  end
+
+let erase_regions (ty : ty) : ty = region_erasing_visitor#visit_ty () ty
+
 (* Fails if the variable is bound *)
 let expect_free_var span (var : 'id de_bruijn_var) : 'id =
   match var with
