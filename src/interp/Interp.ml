@@ -61,6 +61,60 @@ let compute_contexts (crate : crate) : decls_ctx =
   (* Check if there are mixed groups: if there are, we report an error
      and ignore those. *)
   (if mixed_groups <> [] then
+     (* Collect the set of trait-impl ids which are the [Fn]/[FnMut]/[FnOnce]
+        implementations of a closure. We recognize them structurally (never by
+        name): a closure's state type declaration has a [ClosureItem] source,
+        which records the ids of its [Fn*] impls. *)
+     let closure_fn_impl_ids : TraitImplId.Set.t =
+       TypeDeclId.Map.fold
+         (fun _ (d : type_decl) acc ->
+           match d.src with
+           | ClosureItem info ->
+               let add_opt acc = function
+                 | None -> acc
+                 | Some (rb : trait_impl_ref region_binder) ->
+                     TraitImplId.Set.add rb.binder_value.id acc
+               in
+               let acc =
+                 TraitImplId.Set.add info.fn_once_impl.binder_value.id acc
+               in
+               let acc = add_opt acc info.fn_mut_impl in
+               add_opt acc info.fn_impl
+           | _ -> acc)
+         crate.type_decls TraitImplId.Set.empty
+     in
+     (* A mixed group is a "closure recursion" group when it mixes only function
+        declarations with closure [Fn*] trait impls (no types, no user trait
+        impls): i.e. a function that is mutually recursive with one of its own
+        closures because the closure calls back into it (e.g. via
+        [.map(|e| f(e))]). This subset is architecturally special - see the note
+        appended to the error message. *)
+     let is_closure_recursion_group (g : mixed_declaration_group) : bool =
+       let ids = g_declaration_group_to_list g in
+       let has_fun =
+         List.exists
+           (function
+             | IdFun _ -> true
+             | _ -> false)
+           ids
+       in
+       let has_closure_impl = ref false in
+       let ok =
+         List.for_all
+           (function
+             | IdFun _ -> true
+             | IdTraitImpl iid when TraitImplId.Set.mem iid closure_fn_impl_ids
+               ->
+                 has_closure_impl := true;
+                 true
+             | _ -> false)
+           ids
+       in
+       has_fun && !has_closure_impl && ok
+     in
+     let all_closure_recursion =
+       List.for_all is_closure_recursion_group mixed_groups
+     in
      (* We detected mixed groups: print a nice error message *)
      let item_id_to_string (id : item_id) : string =
        let kind = item_id_to_kind_name id in
@@ -100,10 +154,27 @@ let compute_contexts (crate : crate) : decls_ctx =
      in
      let msgs = List.mapi group_to_msg mixed_groups in
      let msgs = String.concat "\n\n" msgs in
+     let closure_note =
+       if all_closure_recursion then
+         "\n\n\
+          Note: every group above is a *closure-recursion* group - a function \
+          that is mutually recursive with one of its own closures' \
+          Fn/FnMut/FnOnce trait implementations (this happens e.g. with \
+          `f(...).map(|e| f(e))`). This subset is not supported yet. The Lean \
+          target shape is known (emit the function together with the closures' \
+          `call`/`call_mut`/`call_once` bodies as one `mutual ... end` block \
+          of `partial_fixpoint` defs, and emit the closures' trait-instance \
+          values as plain `def`s after the block), but producing it requires \
+          inlining the closures' trait dictionaries at the recursive use sites \
+          inside the group - the trait-instance values are records, which Lean \
+          cannot place in the `partial_fixpoint` mutual block nor \
+          forward-reference from it. See REPORT-closure-mixed-scc.md."
+       else ""
+     in
      [%save_error_opt_span] None
        ("Detected groups of mixed mutually recursive definitions (such as a \
          type mutually recursive with a function, or a function mutually \
-         recursive with a trait implementation):\n\n" ^ msgs));
+         recursive with a trait implementation):\n\n" ^ msgs ^ closure_note));
 
   (* Compute the set of ids which appear in the declaration groups: only those
      should be extracted.

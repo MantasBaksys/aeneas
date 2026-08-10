@@ -8,7 +8,9 @@
 - fun decl(Source: 'tests/src/mixed_group_recursion.rs', lines 32:58-32:73): mixed_group_recursion::sum_tree::{impl core::ops::function::FnOnce<(mixed_group_recursion::Tree,), u32> for mixed_group_recursion::sum_tree::closure}::call_once
 - fun decl(Source: 'tests/src/mixed_group_recursion.rs', lines 32:58-32:73): mixed_group_recursion::sum_tree::{impl core::ops::function::FnMut<(mixed_group_recursion::Tree,), u32> for mixed_group_recursion::sum_tree::closure}::call_mut
 
-Compiler source: interp/Interp.ml, line 103
+
+Note: every group above is a *closure-recursion* group - a function that is mutually recursive with one of its own closures' Fn/FnMut/FnOnce trait implementations (this happens e.g. with `f(...).map(|e| f(e))`). This subset is not supported yet. The Lean target shape is known (emit the function together with the closures' `call`/`call_mut`/`call_once` bodies as one `mutual ... end` block of `partial_fixpoint` defs, and emit the closures' trait-instance values as plain `def`s after the block), but producing it requires inlining the closures' trait dictionaries at the recursive use sites inside the group - the trait-instance values are records, which Lean cannot place in the `partial_fixpoint` mutual block nor forward-reference from it. See REPORT-closure-mixed-scc.md.
+Compiler source: interp/Interp.ml, line 174
 [[91mError[39m] Detected groups of mixed mutually recursive definitions (such as a type mutually recursive with a function, or a function mutually recursive with a trait implementation):
 
 # Group 1:
@@ -18,5 +20,7 @@ Compiler source: interp/Interp.ml, line 103
 - fun decl(Source: 'tests/src/mixed_group_recursion.rs', lines 32:58-32:73): mixed_group_recursion::sum_tree::{impl core::ops::function::FnOnce<(mixed_group_recursion::Tree,), u32> for mixed_group_recursion::sum_tree::closure}::call_once
 - fun decl(Source: 'tests/src/mixed_group_recursion.rs', lines 32:58-32:73): mixed_group_recursion::sum_tree::{impl core::ops::function::FnMut<(mixed_group_recursion::Tree,), u32> for mixed_group_recursion::sum_tree::closure}::call_mut
 
-Compiler source: interp/Interp.ml, line 103
+
+Note: every group above is a *closure-recursion* group - a function that is mutually recursive with one of its own closures' Fn/FnMut/FnOnce trait implementations (this happens e.g. with `f(...).map(|e| f(e))`). This subset is not supported yet. The Lean target shape is known (emit the function together with the closures' `call`/`call_mut`/`call_once` bodies as one `mutual ... end` block of `partial_fixpoint` defs, and emit the closures' trait-instance values as plain `def`s after the block), but producing it requires inlining the closures' trait dictionaries at the recursive use sites inside the group - the trait-instance values are records, which Lean cannot place in the `partial_fixpoint` mutual block nor forward-reference from it. See REPORT-closure-mixed-scc.md.
+Compiler source: interp/Interp.ml, line 174
 
