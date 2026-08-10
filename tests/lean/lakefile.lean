@@ -45,6 +45,7 @@ package «tests» {}
 @[default_target] lean_lib FromTo
 @[default_target] lean_lib GenericUnitOutput
 @[default_target] lean_lib Hashmap
+@[default_target] lean_lib HigherRankedFnmutFreeLifetime
 @[default_target] lean_lib HigherRankedTraitBounds
 @[default_target] lean_lib Into
 @[default_target] lean_lib Issue1044OpaqueTuple
