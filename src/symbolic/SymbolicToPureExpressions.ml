@@ -410,6 +410,89 @@ and translate_function_call_aux (call : S.call) (e : S.expr) (ctx : bs_ctx) :
             ^ String.concat "\n"
                 (List.map (pure_ty_to_string ctx)
                    (List.map snd (List.filter_map (fun x -> x) back_tys)))];
+          (* Guard against a class of *silent* miscompilations of by-value
+             closure arguments.
+
+             The backward functions produced here for the call are computed from
+             the *instantiated* signature [inst_sg] (see [instantiate_fun_sig],
+             which recomputes the regions hierarchy on the signature *after*
+             substituting the concrete argument types). When a by-value
+             `FnMut`/`FnOnce` closure argument captures a `&mut`, substitution
+             introduces a region group - hence a backward function - for that
+             captured borrow. The callee's own signature (whether an ordinary
+             generic function typed from its un-substituted signature by
+             [translate_fun_sigs], or an abstract trait-method field) cannot
+             express that backward function: a by-value closure argument is
+             consumed and never returned, so - unlike the receiver-closure case
+             of `FnMut::call_mut`, whose capture backward functions are already
+             filtered out of [back_tys] by [closure_capture_back_gids] - it is
+             not redundant with any returned closure state and cannot simply be
+             filtered. The destructuring pattern we build here then has more
+             tuple components than the callee actually returns.
+
+             Aeneas would otherwise emit this with no error, warning or `sorry`,
+             producing Lean that fails to elaborate ("expected a product type").
+             We detect it structurally - a surviving (non-filtered) backward
+             function whose entire region group lives inside a by-value
+             closure-state argument - and raise, converting a silent
+             miscompilation into an honest error. This is keyed on structure (a
+             [ClosureItem] argument), not on any function or trait name. A sound
+             fix would require monomorphizing the callee for this instantiation,
+             or threading the by-value closure state through as an output. *)
+          (let is_closure_state (ty : T.ty) : bool =
+             match ty with
+             | T.TAdt { id = TAdtId id; _ } -> (
+                 match
+                   TypeDeclId.Map.find_opt id
+                     ctx.decls_ctx.crate.type_decls
+                 with
+                 | Some { src = ClosureItem _; _ } -> true
+                 | _ -> false)
+             | _ -> false
+           in
+           let closure_arg_regions =
+             List.fold_left
+               (fun acc ty ->
+                 if is_closure_state ty then
+                   T.RegionId.Set.union acc (TypesUtils.ty_regions ty)
+                 else acc)
+               T.RegionId.Set.empty inst_sg.inputs
+           in
+           if not (T.RegionId.Set.is_empty closure_arg_regions) then begin
+             let regions_of_gid (gid : T.RegionGroupId.id) : T.RegionId.Set.t =
+               match
+                 List.find_opt
+                   (fun (rg : T.region_var_group) -> rg.id = gid)
+                   inst_sg.regions_hierarchy
+               with
+               | Some rg -> T.RegionId.Set.of_list rg.regions
+               | None -> T.RegionId.Set.empty
+             in
+             (* [back_tys] and [RegionGroupId.Map.bindings dsg.back_sg] are both
+                ordered by region-group id, so they line up. A [Some] entry is a
+                backward function that survived filtering. *)
+             let offending =
+               List.exists2
+                 (fun (gid, _) bty ->
+                   match bty with
+                   | None -> false
+                   | Some _ ->
+                       let regs = regions_of_gid gid in
+                       (not (T.RegionId.Set.is_empty regs))
+                       && T.RegionId.Set.subset regs closure_arg_regions)
+                 (RegionGroupId.Map.bindings dsg.back_sg)
+                 back_tys
+             in
+             [%cassert] ctx.span (not offending)
+               "Unsupported: a by-value closure argument captures a `&mut` \
+                whose given-back value the callee's signature cannot express \
+                (the closure is passed by value and never returned). Emitting \
+                this call would destructure more components than the callee \
+                returns, producing Lean that does not elaborate. The callee \
+                must be monomorphized for this instantiation, or its closure \
+                state threaded through as an output. (This was previously a \
+                silent miscompilation - no error, warning or `sorry`.)"
+           end);
           (* Introduce variables for the backward functions *)
           (* Compute a proper basename for the variables *)
           let back_fun_name =
