@@ -308,7 +308,8 @@ let analyze_module (m : crate) (funs_map : fun_decl FunDeclId.Map.t) :
           ("Mixed declaration groups (which contain both type and function \
             declarations or functions and traits, for instance) are not \
             supported yet: ["
-          ^ String.concat ", " (List.map Charon.Print.item_id_to_string item_ids)
+          ^ String.concat ", "
+              (List.map Charon.Print.item_id_to_string item_ids)
           ^ "]");
         (* Even though we can't translate the group as a whole, we still analyze
            the function declarations it contains, as a mutually recursive group.
@@ -319,7 +320,9 @@ let analyze_module (m : crate) (funs_map : fun_decl FunDeclId.Map.t) :
            every later [lookup] fail). *)
         let fun_ids =
           List.filter_map
-            (function Types.IdFun id -> Some id | _ -> None)
+            (function
+              | Types.IdFun id -> Some id
+              | _ -> None)
             item_ids
         in
         (if fun_ids <> [] then
@@ -330,13 +333,17 @@ let analyze_module (m : crate) (funs_map : fun_decl FunDeclId.Map.t) :
                | None -> show_fun_decl_id id
                | Some d ->
                    Charon.Print.name_to_string fmt_env d.item_meta.name
-                   ^ " (" ^ span_to_string d.item_meta.span ^ ")"
+                   ^ " ("
+                   ^ span_to_string d.item_meta.span
+                   ^ ")"
              in
-             let decls = String.concat "\n" (List.map decl_id_to_string fun_ids) in
+             let decls =
+               String.concat "\n" (List.map decl_id_to_string fun_ids)
+             in
              [%save_error_opt_span] error.span
                ("Encountered an error when analyzing the function declarations \
-                 of a mixed declaration group:\n" ^ decls ^ "\n\nInitial error:\n"
-              ^ error.msg));
+                 of a mixed declaration group:\n" ^ decls
+              ^ "\n\nInitial error:\n" ^ error.msg));
         analyze_decl_groups decls'
   in
 

@@ -1087,13 +1087,15 @@ let trait_impl_is_builtin (ctx : gen_ctx) (id : Pure.trait_impl_id) : bool =
       (TraitImplId.Map.find_opt id ctx.trans_trait_impls)
   in
   let trait_decl =
-    Pure.TraitDeclId.Map.find trait_impl.impl_trait.trait_decl_id
-      ctx.trans_trait_decls
+    [%silent_unwrap_opt_span] None
+      (Pure.TraitDeclId.Map.find_opt trait_impl.impl_trait.trait_decl_id
+         ctx.trans_trait_decls)
   in
   let builtin_info =
     let open ExtractBuiltin in
     let trait_impl =
-      TraitImplId.Map.find trait_impl.def_id ctx.crate.trait_impls
+      [%silent_unwrap_opt_span] None
+        (TraitImplId.Map.find_opt trait_impl.def_id ctx.crate.trait_impls)
     in
     match_name_with_generics_find_opt ctx.trans_ctx trait_decl.item_meta.name
       trait_impl.impl_trait.generics
