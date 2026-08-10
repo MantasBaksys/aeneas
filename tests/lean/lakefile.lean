@@ -102,6 +102,7 @@ package «tests» {}
 @[default_target] lean_lib StepBy
 @[default_target] lean_lib StringChars
 @[default_target] lean_lib SwitchTest
+@[default_target] lean_lib TraitMethodAssocTypeConstraint
 @[default_target] lean_lib Traits
 @[default_target] lean_lib Tutorial
 @[default_target] lean_lib Vec

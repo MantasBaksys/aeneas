@@ -212,3 +212,157 @@ numbers below were both re-measured on the final binary.
   wrong backward functions, which the task explicitly warns against.
 - I did **not** modify `charon`, the shared llbc/golden oracles, or any other
   worktree.
+
+---
+
+# Part 2 — Implementing Proposal A: support trait type constraints on method signatures
+
+Follow-up task after the refutation above was accepted and the test-only branch
+merged. The base moved to `mantas-ripgrep` (now including `fix/static-loans-traits`
++ the task-1 test commit); I rebased onto it before measuring. On the rebased
+base, `grep-regex-full` is **35 errors / 14 `sorry`** (not 42).
+
+## Root cause (precise)
+
+`src/symbolic/SymbolicToPureTypes.ml`, in `translate_fun_sigs`, built the local
+`inst_sg : LlbcAst.inst_fun_sig` and guarded it with:
+
+```ocaml
+[%sanity_check_opt_span] span (sg.item_binder_params.trait_type_constraints = []);
+```
+
+For a *regular* function this is always satisfied, because Charon normalises
+associated-type projections away. But a trait **provided method** whose
+`where`-clause constrains an associated type of `Self` keeps a non-empty
+`trait_type_constraints` on the method signature. The concrete offender in
+ripgrep is `core::iter::traits::iterator::Iterator::copied` (method id 56),
+whose clause `Self: Iterator<Item = &'a T>` becomes the LLBC
+`trait_type_constraint` `<Self as Iterator>::Item = &'0 T`. (`find` on
+`slice::Iter` is a *different*, HRTB, root — see Part 1; it is unaffected here.)
+
+Because the sanity check aborts, the **whole `Iterator` trait declaration**
+fails to translate, and every downstream lookup of it fails
+(`ExtractBase.ml:484` "Could not find: trait_decl_id: N", which *emits*
+`sorry /- Could not find … -/` into the generated Lean; `Translate.ml:1073/1090`
+`trait_{decl,impl}_is_builtin`). This is the ~20-of-35 cascade.
+
+## Why the check was over-conservative (soundness argument)
+
+The local `inst_sg` is used **only** to compute the regions hierarchy and the
+decomposed signature *types*. `trait_type_constraints` are predicates, not
+borrow-bearing types, so they play no role in the regions hierarchy. The check
+was a stale defensive assertion that the input "happens" to have none — true for
+regular functions, false for these methods — but dropping them in this *local*
+signature loses no information, because the constraints are preserved everywhere
+they are actually consumed:
+
+1. The **pure** signature keeps them: `translate_generic_params` translates
+   `trait_type_constraints` into `preds`, which flows into the emitted signature.
+   (Pure `trait_type_constraints` are otherwise only *printed* — see
+   `PrintPure.ml:784` — i.e. inert for extraction.)
+2. **Body** symbolic execution reconstructs its **own** `inst_fun_sig` with the
+   constraints preserved (`InterpUtils.instantiate_fun_sig`, ~L905–1010); it does
+   not reuse this local `inst_sg`.
+3. Charon's `--lift-associated-types` (implied by `--preset=aeneas`) already
+   re-encodes the `Item = &T` relationship as an extra trait clause, so the
+   emitted signature carries it as an ordinary instance parameter.
+
+The fix therefore **removes the assertion** (with an explanatory comment) rather
+than inventing new machinery — it reuses the already-trusted `preds`/interpreter
+paths, exactly the "reuse an existing trusted code path" bar requested.
+
+## What the fix produces (structural spot-check)
+
+After the fix, `Iterator::copied.default` extracts as a well-typed `axiom`:
+
+```
+axiom core.iter.traits.iterator.Iterator.copied.default
+  {Self T Clause2_Item : Type}
+  (IteratorSelfSharedATInst : core.iter.traits.iterator.Iterator Self T)
+  (markerCopyInst : core.marker.Copy T)
+  (IteratorInst : core.iter.traits.iterator.Iterator Self Clause2_Item) :
+  Self → Result (core.iter.adapters.copied.Copied Self)
+```
+
+The associated-type constraint `Item = &T` manifests as the extra
+`Iterator Self T` instance (`…SelfSharedAT…`). This is slightly over-general (the
+`Eq` between the two Items is not re-imposed), but it is an **opaque axiom that
+replaces a `sorry` hole** — strictly a soundness *improvement*: an over-general
+opaque axiom cannot be exploited to derive falsehood (the output type does not
+mention `Item`), whereas `sorry` is literally unsound. The `Iterator` trait
+declaration itself is a core trait provided by the Aeneas Lean support library,
+so it is (correctly) not re-emitted; its impls and provided-method axioms now all
+resolve.
+
+## Cascade: confirmed and quantified
+
+| metric | before (rebased) | after | delta |
+|---|---|---|---|
+| `grep-regex-full` errors | 35 | 14 | **−21** |
+| `grep-regex-full` `sorry` lines | 14 | 3 | **−11** |
+| `Could not find: trait_decl_id` errors | 11 | **0** | −11 |
+| `sorry /- Could not find … -/` holes | 11 | **0** | −11 |
+
+The 3 remaining `sorry` are ordinary **body** placeholders from *other*
+pre-existing defects (`ban.rs` early-return-in-loops; `literal.rs` Extractor
+methods that hit the HRTB-`find` / mixed-recursive roots), **not** the dangerous
+missing-trait-decl type-holes. The remaining 14 errors are all pre-existing
+unrelated roots (4× mixed-recursive `strip.rs`, 2× HRTB `find` from Part 1,
+`ban.rs` early-return, internal errors, etc.) — none introduced by this change.
+
+## Validation (rebased base 35 / 20 / 0 / 0)
+
+| input | errors before→after | uncaught | files | `sorry` before→after | oracle |
+|---|---|---|---|---|---|
+| grep-regex-full   | 35 → **14** | 0 | 4 | 14 → **3** | — |
+| nonmatching-with-hir | 20 → **20** | 0 | 4 | 6 → **6** | — |
+| grep-matcher      | 0 → **0** | 0 | 4 | 0 → 0 | **byte-identical** to golden-grep-matcher |
+| nonmatching-clean | 0 → **0** | 0 | 4 | 0 → 0 | **byte-identical** to spike-nonmatching/C |
+
+`nonmatching-with-hir` is unchanged by design: it has **0** `trait_decl_id`
+cascade errors — it never triggered this bug (its 20 errors are mixed-recursive
+groups, `SwitchInt`, continue-to-outer-loops, float/string literals, etc.).
+
+- **Aeneas test suite:** `make extract-tests` exits **0**; **zero diffs** to any
+  committed backend output (`git status` shows only the new test files +
+  lakefile entry). The "Uncaught exception" lines in the log are the *expected*
+  known-failure tests (`dyn_unsize`, `higher_ranked_*`), which the runner asserts
+  must fail.
+
+## Regression test
+
+`tests/src/trait_method_assoc_type_constraint.rs` — a self-contained trait
+`MyIter` with a provided method `count_copied` whose `where`-clause is
+`Self: MyIter<Item = &'a T>` (an associated-type-projection constraint on a
+method signature). I verified it genuinely exercises the bug: temporarily
+reinstating the sanity check and rebuilding makes exactly this test fail with the
+same cascade (`… trait declaration 'MyIter' … / Could not find: trait_decl_id`).
+With the fix it translates to well-typed, `sorry`-free Lean
+(`tests/lean/TraitMethodAssocTypeConstraint.lean`), including a structurally
+correct `structure MyIter (Self) (Self_Item)` and a `count_copied.default` that
+carries the associated-type constraint as an extra `MyIter Self T` instance —
+the exact miniature of the real `Iterator::copied`. Added the corresponding
+`lean_lib` entry to `tests/lean/lakefile.lean`.
+
+## What I did NOT validate / deliberately did not attempt
+
+- I did **not** run `lake build` on the generated Lean (the new test or the
+  ripgrep output): the Aeneas Lean support library is **not** prebuilt in this
+  environment, so building even one lib would require compiling all of Aeneas +
+  Mathlib/Batteries — infeasible here. Validation is at the *extraction* level
+  (Aeneas → Lean produces 0 errors, structurally well-formed, `sorry`-free
+  output), which is what the compiler regression harness (`make extract-tests`)
+  checks. The over-generality of `copied.default` is argued sound above but was
+  not machine-checked by a downstream proof.
+- I did **not** run `cargo-test` (writes to `/tmp`, forbidden here; it exercises
+  Rust unit tests, not the translator).
+- I did **not** touch `Translate.ml:1073/1090` or `ExtractBase.ml:484` to make
+  the missing-trait-decl path fail loudly instead of emitting `sorry`. With the
+  root fixed, those `sorry` holes no longer appear on our inputs; the secondary
+  hardening is left out to keep this change surgical (as instructed, secondary to
+  the root fix and not to be ballooned).
+- I did **not** implement the Part-1 HRTB (`find`) fix — still a separate,
+  architecturally-deep root (2 remaining errors), tracked by the task-1
+  known-failure test.
+- I did **not** modify `charon`, the shared llbc/golden oracles, `PrePasses.ml`,
+  or any other worktree.
