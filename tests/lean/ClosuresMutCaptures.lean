@@ -44,35 +44,31 @@ def call_fn_mut_one.closure := Slice Std.U8
     Source: 'tests/src/closures_mut_captures.rs', lines 21:20-21:39 -/
 def call_fn_mut_one.closure.Insts.CoreOpsFunctionFnMutTupleUsizeTuple.call_mut
   (c : call_fn_mut_one.closure) (tupled_args : Std.Usize) :
-  Result (Unit × call_fn_mut_one.closure × (call_fn_mut_one.closure →
-    call_fn_mut_one.closure))
+  Result (Unit × call_fn_mut_one.closure)
   := do
   let s ← Slice.update c tupled_args 0#u8
-  let back := fun c1 => c1
-  ok ((), s, back)
+  ok ((), s)
 
 /-- [closures_mut_captures::call_fn_mut_one]:
     Source: 'tests/src/closures_mut_captures.rs', lines 20:0-23:1
     Visibility: public -/
 def call_fn_mut_one
   (a : Slice Std.U8) (i : Std.Usize) : Result (Slice Std.U8) := do
-  let (_, write, call_mut_back) ←
+  let (_, write) ←
     call_fn_mut_one.closure.Insts.CoreOpsFunctionFnMutTupleUsizeTuple.call_mut
       a i
-  let a1 := call_mut_back write
+  let a1 := write
   ok a1
 
 /-- [closures_mut_captures::call_fn_mut_one::{impl core::ops::function::FnOnce<(usize,), ()> for closures_mut_captures::call_fn_mut_one::closure<'_0>}::call_once]:
     Source: 'tests/src/closures_mut_captures.rs', lines 21:20-21:39 -/
 def
   call_fn_mut_one.closure.Insts.CoreOpsFunctionFnOnceTupleUsizeTuple.call_once
-  (c : call_fn_mut_one.closure) (i : Std.Usize) :
-  Result (Unit × call_fn_mut_one.closure)
-  := do
-  let (_, c1, call_mut_back) ←
+  (c : call_fn_mut_one.closure) (i : Std.Usize) : Result Unit := do
+  let _ ←
     call_fn_mut_one.closure.Insts.CoreOpsFunctionFnMutTupleUsizeTuple.call_mut
       c i
-  ok ((), call_mut_back c1)
+  ok ()
 
 /-- Trait implementation: [closures_mut_captures::call_fn_mut_one::{impl core::ops::function::FnOnce<(usize,), ()> for closures_mut_captures::call_fn_mut_one::closure<'_0>}]
     Source: 'tests/src/closures_mut_captures.rs', lines 21:20-21:39 -/
@@ -102,18 +98,12 @@ def call_fn_mut_two.closure := Slice Std.U8 × Slice Std.U8
     Source: 'tests/src/closures_mut_captures.rs', lines 27:20-30:5 -/
 def call_fn_mut_two.closure.Insts.CoreOpsFunctionFnMutTupleUsizeTuple.call_mut
   (c : call_fn_mut_two.closure) (tupled_args : Std.Usize) :
-  Result (Unit × call_fn_mut_two.closure × (call_fn_mut_two.closure →
-    call_fn_mut_two.closure) × (call_fn_mut_two.closure →
-    call_fn_mut_two.closure))
+  Result (Unit × call_fn_mut_two.closure)
   := do
   let (s, s1) := c
   let s2 ← Slice.update s tupled_args 0#u8
   let s3 ← Slice.update s1 tupled_args 1#u8
-  let back := fun c1 => let (s4, _) := c1
-                        (s4, s1)
-  let back1 := fun c1 => let (_, s4) := c1
-                         (s, s4)
-  ok ((), (s2, s3), back, back1)
+  ok ((), (s2, s3))
 
 /-- [closures_mut_captures::call_fn_mut_two]:
     Source: 'tests/src/closures_mut_captures.rs', lines 26:0-32:1
@@ -122,27 +112,23 @@ def call_fn_mut_two
   (a : Slice Std.U8) (b : Slice Std.U8) (i : Std.Usize) :
   Result ((Slice Std.U8) × (Slice Std.U8))
   := do
-  let (_, write, call_mut_back, call_mut_back1) ←
+  let (_, write) ←
     call_fn_mut_two.closure.Insts.CoreOpsFunctionFnMutTupleUsizeTuple.call_mut
       (a, b) i
-  let (a1, _) := call_mut_back write
-  let (_, b1) := call_mut_back1 write
+  let (s, s1) := write
+  let (a1, _) := (s, s1)
+  let (_, b1) := (s, s1)
   ok (a1, b1)
 
 /-- [closures_mut_captures::call_fn_mut_two::{impl core::ops::function::FnOnce<(usize,), ()> for closures_mut_captures::call_fn_mut_two::closure<'_0, '_1>}::call_once]:
     Source: 'tests/src/closures_mut_captures.rs', lines 27:20-30:5 -/
 def
   call_fn_mut_two.closure.Insts.CoreOpsFunctionFnOnceTupleUsizeTuple.call_once
-  (c : call_fn_mut_two.closure) (i : Std.Usize) :
-  Result (Unit × call_fn_mut_two.closure × call_fn_mut_two.closure)
-  := do
-  let (s, s1) := c
-  let (_, c1, call_mut_back, call_mut_back1) ←
+  (c : call_fn_mut_two.closure) (i : Std.Usize) : Result Unit := do
+  let _ ←
     call_fn_mut_two.closure.Insts.CoreOpsFunctionFnMutTupleUsizeTuple.call_mut
       c i
-  let (s2, _) := call_mut_back c1
-  let (_, s3) := call_mut_back1 c1
-  ok ((), (s2, s1), (s, s3))
+  ok ()
 
 /-- Trait implementation: [closures_mut_captures::call_fn_mut_two::{impl core::ops::function::FnOnce<(usize,), ()> for closures_mut_captures::call_fn_mut_two::closure<'_0, '_1>}]
     Source: 'tests/src/closures_mut_captures.rs', lines 27:20-30:5 -/
@@ -176,23 +162,14 @@ def
   {A : Type} (coreopsfunctionFnMutInstT0PairT1Mut0T2T3Inst :
   core.ops.function.FnMut.InstT0PairT1Mut0T2T3 A Std.U8 (alloc.vec.Vec Std.U8)
   Unit) (c : call_fn_mut_mixed.closure A) (tupled_args : Std.Usize) :
-  Result (Unit × (call_fn_mut_mixed.closure A) × (call_fn_mut_mixed.closure A
-    → call_fn_mut_mixed.closure A) × (call_fn_mut_mixed.closure A →
-    call_fn_mut_mixed.closure A) × (call_fn_mut_mixed.closure A →
-    call_fn_mut_mixed.closure A))
+  Result (Unit × (call_fn_mut_mixed.closure A))
   := do
   let (s, t, v) := c
   let s1 ← Slice.update s tupled_args 0#u8
   let i ← Slice.index_usize s1 tupled_args
   let (_, (t1, v1)) ←
     coreopsfunctionFnMutInstT0PairT1Mut0T2T3Inst.call_mut t (i, v)
-  let back := fun c1 => let (s2, _, _) := c1
-                        (s2, t, v)
-  let back1 := fun c1 => let (_, t2, _) := c1
-                         (s, t2, v)
-  let back2 := fun c1 => let (_, _, v2) := c1
-                         (s, t, v2)
-  ok ((), (s1, t1, v1), back, back1, back2)
+  ok ((), (s1, t1, v1))
 
 /-- [closures_mut_captures::call_fn_mut_mixed]:
     Source: 'tests/src/closures_mut_captures.rs', lines 37:0-46:1
@@ -203,11 +180,12 @@ def call_fn_mut_mixed
   Unit) (a : Slice Std.U8) (append : A) (dst : alloc.vec.Vec Std.U8) :
   Result ((Slice Std.U8) × (alloc.vec.Vec Std.U8))
   := do
-  let (_, step, call_mut_back, _, call_mut_back1) ←
+  let (_, step) ←
     call_fn_mut_mixed.closure.Insts.CoreOpsFunctionFnMutTupleUsizeTuple.call_mut
       coreopsfunctionFnMutInstT0PairT1Mut0T2T3Inst (a, append, dst) 0#usize
-  let (a1, _, _) := call_mut_back step
-  let (_, _, dst1) := call_mut_back1 step
+  let (s, t, v) := step
+  let (a1, _, _) := (s, t, v)
+  let (_, _, dst1) := (s, t, v)
   ok (a1, dst1)
 
 /-- [closures_mut_captures::call_fn_mut_mixed::{impl core::ops::function::FnOnce<(usize,), ()> for closures_mut_captures::call_fn_mut_mixed::closure<'_0, '_1, '_2, A>}::call_once]:
@@ -217,17 +195,12 @@ def
   {A : Type} (coreopsfunctionFnMutInstT0PairT1Mut0T2T3Inst :
   core.ops.function.FnMut.InstT0PairT1Mut0T2T3 A Std.U8 (alloc.vec.Vec Std.U8)
   Unit) (c : call_fn_mut_mixed.closure A) (i : Std.Usize) :
-  Result (Unit × (call_fn_mut_mixed.closure A) × (call_fn_mut_mixed.closure
-    A) × (call_fn_mut_mixed.closure A))
+  Result Unit
   := do
-  let (s, t, v) := c
-  let (_, c1, call_mut_back, call_mut_back1, call_mut_back2) ←
+  let _ ←
     call_fn_mut_mixed.closure.Insts.CoreOpsFunctionFnMutTupleUsizeTuple.call_mut
       coreopsfunctionFnMutInstT0PairT1Mut0T2T3Inst c i
-  let (s1, _, _) := call_mut_back c1
-  let (_, t1, _) := call_mut_back1 c1
-  let (_, _, v1) := call_mut_back2 c1
-  ok ((), (s1, t, v), (s, t1, v), (s, t, v1))
+  ok ()
 
 /-- Trait implementation: [closures_mut_captures::call_fn_mut_mixed::{impl core::ops::function::FnOnce<(usize,), ()> for closures_mut_captures::call_fn_mut_mixed::closure<'_0, '_1, '_2, A>}]
     Source: 'tests/src/closures_mut_captures.rs', lines 41:19-44:5 -/

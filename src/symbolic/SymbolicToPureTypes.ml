@@ -991,6 +991,86 @@ and translate_inst_fun_sig_to_decomposed_fun_type (span : Meta.span option)
       ^ "\n- inputs: " ^ inputs ^ "\n- back outputs: " ^ outputs];
     outputs
   in
+  (* Backward-function selection for closures that CAPTURE `&mut` borrows.
+
+     A closure's `Fn*` method receives its captured environment through the
+     receiver: `&'self mut Self` for `FnMut::call_mut`, or `Self` (by value) for
+     `FnOnce::call_once`, where `Self` is the closure-state ADT. Every captured
+     `&mut` borrow is stored as a field of that state, so its lifetime is a
+     region nested *inside* `Self`. Aeneas emits one backward function per region
+     holding a mutable borrow, hence one per captured `&mut` in addition to the
+     one for `'self` (which gives back the whole updated `Self`).
+
+     Those per-capture backward functions carry no information: because the
+     captured borrow lives inside the state, giving back the state already gives
+     it back. Concretely each of them is the projection of the returned `Self`
+     onto the corresponding field (e.g. `fun c => c` for a single capture). More
+     to the point, the `FnMut`/`FnOnce` trait contract exposes a mutated capture
+     *only* through the returned `Self` (`call_mut : Self -> Args -> Result
+     (Output x Self)`, `call_once : Self -> Args -> Result Output`), so these
+     extra outputs make the generated impl disagree with the trait declaration it
+     is assigned to and the code fails to type-check.
+
+     We therefore drop the backward function of every region group that lives
+     entirely inside `Self` (the capture regions), keeping only the `'self`
+     group and any group coming from an argument or the output. This is sound
+     precisely because the closure state *is* the tuple of captured values: the
+     kept `'self` backward function returns that state, from which every dropped
+     capture is a pure projection. It would be unsound only if a dropped region
+     denoted a borrow that is *not* reachable from the returned `Self` - which
+     cannot happen for a closure capture, as a capture is by construction a field
+     of the state.
+
+     We recognize the situation structurally, from the callee's own signature:
+     the receiver's ADT is a closure state (its type declaration has a
+     [ClosureItem] source). This is deliberately not keyed on the name of the
+     `Fn*` trait being implemented, and it makes the decision identical at the
+     definition site and at every call site (both see the same instantiated
+     signature). *)
+  let receiver_is_closure_state (ty : T.ty) : bool =
+    match ty with
+    | T.TAdt { id = TAdtId id; _ } -> (
+        match TypeDeclId.Map.find_opt id decls_ctx.crate.type_decls with
+        | Some { src = ClosureItem _; _ } -> true
+        | _ -> false)
+    | _ -> false
+  in
+  let closure_capture_back_gids : RegionGroupId.Set.t =
+    match sg.inputs with
+    | [] -> RegionGroupId.Set.empty
+    | receiver :: _ ->
+        (* Peel the receiver: `&'self mut Self` (`FnMut::call_mut`) exposes the
+           self region and the closure state [Self]; a by-value receiver
+           (`FnOnce::call_once`) exposes [Self] directly with no self region. *)
+        let self_region, self_ty =
+          match receiver with
+          | T.TRef (RVar (Free rid), pointee, RMut) -> (Some rid, pointee)
+          | _ -> (None, receiver)
+        in
+        if not (receiver_is_closure_state self_ty) then RegionGroupId.Set.empty
+        else
+          (* Regions occurring inside `Self`, i.e. all regions of the receiver
+             except the self region: exactly the captured `&mut` regions. *)
+          let capture_regions =
+            let all = TypesUtils.ty_regions receiver in
+            match self_region with
+            | Some r -> T.RegionId.Set.remove r all
+            | None -> all
+          in
+          (* A region group is a capture group iff it is non-empty and all of its
+             regions are capture regions (so it cannot be the self group, nor a
+             group shared with an argument/output region). *)
+          List.fold_left
+            (fun acc (rg : T.region_var_group) ->
+              if
+                rg.regions <> []
+                && List.for_all
+                     (fun rid -> T.RegionId.Set.mem rid capture_regions)
+                     rg.regions
+              then RegionGroupId.Set.add rg.id acc
+              else acc)
+            RegionGroupId.Set.empty sg.regions_hierarchy
+  in
   let compute_back_info_for_group (rg : T.region_var_group) :
       RegionGroupId.id * back_sg_info =
     let gid = rg.id in
@@ -1025,7 +1105,8 @@ and translate_inst_fun_sig_to_decomposed_fun_type (span : Meta.span option)
     in
     let outputs = compute_back_outputs_for_gid gid in
     let filter =
-      !Config.simplify_merged_fwd_backs && inputs = [] && outputs = []
+      (!Config.simplify_merged_fwd_backs && inputs = [] && outputs = [])
+      || RegionGroupId.Set.mem gid closure_capture_back_gids
     in
     let info = { inputs; outputs; effect_info = back_effect_info; filter } in
     (gid, info)
@@ -1244,9 +1325,18 @@ and compute_back_tys_with_info (dsg : Pure.decomposed_fun_type) :
           (fun (_, tys) -> mk_simpl_tuple_ty (List.map snd tys))
           back_sg.outputs
       in
-      (* Filter if necessary *)
-      if !Config.simplify_merged_fwd_backs && inputs = [] && outputs = [] then
-        None
+      (* Filter if necessary.
+
+         A backward function is dropped when it has neither inputs nor outputs
+         (the usual merged-fwd/back simplification), or when it has been marked
+         for filtering - currently, a closure capture-region backward function
+         that is redundant with the returned closure state (see
+         [closure_capture_back_gids] in
+         [translate_inst_fun_sig_to_decomposed_fun_type]). *)
+      if
+        back_sg.filter
+        || (!Config.simplify_merged_fwd_backs && inputs = [] && outputs = [])
+      then None
       else
         let output = mk_simpl_tuple_ty outputs in
         let output =
