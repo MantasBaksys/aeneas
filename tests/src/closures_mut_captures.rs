@@ -5,13 +5,13 @@
 // (the dual of the `&mut`-in-closure-ARGUMENTS defect handled by
 // `--monomorphize-mut=except-types` + closures_mut_args.rs).
 //
-// STATUS: this file EXTRACTS with 0 Aeneas errors/warnings, but the generated
-// Lean does NOT elaborate: the `FnMut`/`FnOnce` *impl* produced by symbolic
-// execution has extra product components (one backward continuation per
-// captured `&mut`) that the generic builtin `FnMut`/`FnOnce` trait *declaration*
-// (`Self -> Args -> Result (Output x Self)`) does not have. See the analysis in
-// the task report. It is therefore NOT registered in tests/lean/lakefile.lean
-// yet; register it (alphabetically) once the defect is fixed.
+// STATUS: FIXED. Aeneas now drops the redundant per-capture backward functions
+// (see the "closure_capture_back_gids" selection in
+// src/symbolic/SymbolicToPureTypes.ml), so `call_mut`/`call_once` match the
+// builtin `FnMut`/`FnOnce` trait declarations
+// (`Self -> Args -> Result (Output x Self)` / `Self -> Args -> Result Output`)
+// and the generated Lean elaborates. This file is registered (alphabetically)
+// in tests/lean/lakefile.lean.
 
 // One captured `&mut`. The closure self is exactly the captured `&mut [u8]`, so
 // its `call_mut` gets type

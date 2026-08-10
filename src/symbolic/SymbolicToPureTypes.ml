@@ -1047,8 +1047,7 @@ and translate_inst_fun_sig_to_decomposed_fun_type (span : Meta.span option)
           | T.TRef (RVar (Free rid), pointee, RMut) -> (Some rid, pointee)
           | _ -> (None, receiver)
         in
-        if not (receiver_is_closure_state self_ty) then
-          RegionGroupId.Set.empty
+        if not (receiver_is_closure_state self_ty) then RegionGroupId.Set.empty
         else
           (* Regions occurring inside `Self`, i.e. all regions of the receiver
              except the self region: exactly the captured `&mut` regions. *)
