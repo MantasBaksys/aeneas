@@ -584,7 +584,15 @@ let update_loops (crate : crate) (f : fun_decl) : fun_decl =
                   match after with
                   | [] ->
                       [%craise] span
-                        "Early returns inside of loops are not supported yet"
+                        "Early returns out of loops are not supported yet: \
+                         this loop contains both a `break` and an early \
+                         `return`, but it is not directly followed by the \
+                         function's `return`/panic (e.g. it is nested inside \
+                         another loop, an `if`, or a `match`), so the early \
+                         return cannot be rewritten as a simple break. \
+                         Encoding this requires control-flow flattening (a \
+                         synthetic exit-reason threaded out of the loop), \
+                         which Aeneas does not implement yet."
                   | st :: after -> (
                       match st.kind with
                       | Return -> [ { st with kind = Break 0 } ]
@@ -600,7 +608,13 @@ let update_loops (crate : crate) (f : fun_decl) : fun_decl =
                   | Break i ->
                       (* Move the statements [after] before the break *)
                       [%cassert] span (i = 0)
-                        "Breaks to outer loops are not supported yet";
+                        "Breaks to outer loops are not supported yet: a \
+                         `break` here targets an enclosing loop other than the \
+                         innermost one (`break i` with i>0, i.e. a labelled \
+                         `break 'outer`). Non-local exits out of nested loops \
+                         require control-flow flattening (a synthetic \
+                         exit-reason threaded out of the loop), which Aeneas \
+                         does not implement yet.";
                       after
                   | _ -> [ st ]
                 in
@@ -645,18 +659,34 @@ let update_loops (crate : crate) (f : fun_decl) : fun_decl =
         { block with statements = update block.statements }
 
       method! visit_Break depth i =
-        [%cassert] span (i = 0) "Breaks to outer loops are not supported yet";
+        [%cassert] span (i = 0)
+          "Breaks to outer loops are not supported yet: a `break` targets an \
+           enclosing loop other than the innermost one (`break i` with i>0, \
+           i.e. a labelled `break 'outer`). Non-local exits out of nested \
+           loops require control-flow flattening (a synthetic exit-reason \
+           threaded out of the loop), which Aeneas does not implement yet.";
         super#visit_Break depth i
 
       method! visit_Continue depth i =
-        [%cassert] span (i = 0) "Continue to outer loops are not supported yet";
+        [%cassert] span (i = 0)
+          "Continues to outer loops are not supported yet: a `continue` \
+           targets an enclosing loop other than the innermost one (`continue \
+           i` with i>0, i.e. a labelled `continue 'outer`). Non-local control \
+           flow out of nested loops requires control-flow flattening (a \
+           synthetic exit-reason threaded out of the loop), which Aeneas does \
+           not implement yet.";
         super#visit_Continue depth i
 
       method! visit_statement depth st =
         match st.kind with
         | Return ->
             [%cassert] span (depth <= 1)
-              "Returns inside of nested loops are not supported yet";
+              "Early returns out of nested loops are not supported yet: a \
+               `return` occurs inside a loop that is itself nested at least \
+               two levels deep. Propagating an early return out through \
+               several enclosing loops requires control-flow flattening (a \
+               synthetic exit-reason threaded out of each loop), which Aeneas \
+               does not implement yet.";
             (* If we are inside a loop we need to get rid of the return.
 
                Note that raising an exception containing the full return

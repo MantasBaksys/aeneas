@@ -1,0 +1,5 @@
+[[92mInfo[39m ] Imported: tests/llbc/loops_early_return_in_branch.llbc
+[[91mError[39m] Early returns out of loops are not supported yet: this loop contains both a `break` and an early `return`, but it is not directly followed by the function's `return`/panic (e.g. it is nested inside another loop, an `if`, or a `match`), so the early return cannot be rewritten as a simple break. Encoding this requires control-flow flattening (a synthetic exit-reason threaded out of the loop), which Aeneas does not implement yet.
+Source: 'tests/src/loops-early-return-in-branch.rs', lines 17:0-30:1
+Compiler source: PrePasses.ml, line 586
+

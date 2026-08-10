@@ -1,0 +1,5 @@
+[[92mInfo[39m ] Imported: tests/llbc/loops_continue_outer.llbc
+[[91mError[39m] Continues to outer loops are not supported yet: a `continue` targets an enclosing loop other than the innermost one (`continue i` with i>0, i.e. a labelled `continue 'outer`). Non-local control flow out of nested loops requires control-flow flattening (a synthetic exit-reason threaded out of the loop), which Aeneas does not implement yet.
+Source: 'tests/src/loops-continue-outer.rs', lines 16:0-32:1
+Compiler source: PrePasses.ml, line 671
+
