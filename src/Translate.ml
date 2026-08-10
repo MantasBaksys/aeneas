@@ -403,18 +403,32 @@ let translate_crate_to_pure (crate : crate) (marked_ids : marked_ids) :
       let translate_method_sig (trait_decl : LlbcAst.trait_decl)
           (method_id : TraitMethodId.id)
           (bound_method : LlbcAst.trait_method Types.binder) =
-        let sg =
-          SymbolicToPureTypes.translate_flat_trait_method_sigs trans_ctx
-            trait_decl method_id bound_method
-        in
-        (FunOrMethodId.Method (trait_decl.def_id, method_id), sg)
+        try
+          let sg =
+            SymbolicToPureTypes.translate_flat_trait_method_sigs trans_ctx
+              trait_decl method_id bound_method
+          in
+          Some (FunOrMethodId.Method (trait_decl.def_id, method_id), sg)
+        with CFailure error ->
+          (* Translating a trait method signature failed: record the error and
+             continue instead of aborting the whole crate. This mirrors the
+             recoverable path used for regular function signatures below, so a
+             single unsupported method signature stays local and we still reach
+             code generation. *)
+          let name = name_to_string trans_ctx trait_decl.item_meta.name in
+          [%warn_opt_span] error.span
+            ("Could not translate the signature of a method of trait '" ^ name
+           ^ "' because of previous error\nDefinition span: "
+            ^ Errors.raw_span_to_string trait_decl.item_meta.span
+            ^ "\nInitial error:\n" ^ error.msg);
+          None
       in
       let translate_trait_methods (trait_decl : LlbcAst.trait_decl) =
         let methods =
           TraitDeclId.Map.find trait_decl.def_id
             trans_ctx.trait_methods_to_extract
         in
-        List.map
+        List.filter_map
           (fun (method_id, bound_method) ->
             translate_method_sig trait_decl method_id bound_method)
           (TraitMethodId.Map.to_list methods)
