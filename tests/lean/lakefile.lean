@@ -72,6 +72,7 @@ package «tests» {}
 @[default_target] lean_lib LoopsAdts
 @[default_target] lean_lib LoopSharedBorrowProj
 @[default_target] lean_lib LoopSharedLoanInJoin
+@[default_target] lean_lib LoopsFlagThreaded
 @[default_target] lean_lib LoopsIssues
 @[default_target] lean_lib LoopsNested
 @[default_target] lean_lib LoopsNestedRec
