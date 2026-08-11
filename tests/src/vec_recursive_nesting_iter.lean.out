@@ -1,0 +1,10 @@
+[[92mInfo[39m ] Imported: tests/llbc/vec_recursive_nesting_iter.llbc
+[[91mError[39m] The recursive Vec->List rewrite changed the type of one or more recursive fields from `Vec T` to `List T`, but the following function(s) consume or construct such a field as a `Vec`. Emitting this would produce ill-typed Lean, so we abort here rather than silently miscompiling:
+- function 'vec_recursive_nesting_iter::vec_tree_sum' projects that field and treats it as a `Vec`: field of type 'vec_recursive_nesting_iter::VecTreeBranch' (field 0)
+
+Why this rewrite exists, and why it is fundamental: `Vec T` is modelled in Lean as the subtype `{ l : List T // l.length <= Usize.max }`. A nested-recursive inductive CANNOT carry a field whose type mentions the nested container: when Lean compiles a nested inductive it specialises the container into a private copy but never rewrites inside a dependent bound such as `l.length <= _` (which mentions `l`), so the kernel rejects the declaration outright. The length bound therefore cannot live inside the inductive at all, and the recursive field must be emitted as a plain `List T` (this is exactly what the rewrite does). Constructing such a field from a `Vec` is exact and total (`.val`), but going the other way -- consuming the field as a `Vec` (a projection, an iteration like `for x in &field`, a `Vec::len`, etc.) -- requires re-establishing `l.length <= Usize.max`, a proof that is simply not available at the consumption site.
+
+Fixing this in general requires an external well-formedness predicate (e.g. `wfList`) threaded to every such consumption site, which is a deliberate, separate design decision and is intentionally NOT attempted here. For now the read-only cases translate correctly and the consuming cases fail loudly with this precise diagnostic instead of producing an inscrutable Lean kernel error with no attribution.
+Source: 'tests/src/vec_recursive_nesting_iter.rs', lines 37:0-48:1
+Compiler source: Translate.ml, line 598
+

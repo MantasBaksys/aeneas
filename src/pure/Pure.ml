@@ -88,6 +88,13 @@ type builtin_ty =
   | TArray
   | TSlice
   | TStr
+  | TList
+      (** Core Lean [List]. Emitted in place of [alloc.vec.Vec] for a recursive
+          occurrence: when a recursive type nests through [Vec], the [Vec]
+          subtype bound prevents Lean's nested inductive compiler from rewriting
+          the container, so we emit the plain [List] instead. This is Lean-only
+          (see {!Translate.rewrite_recursive_vec_as_list}); the other backends
+          are left untouched. *)
   | TRawPtr of mutability
       (** The bool Raw pointers don't make sense in the pure world, but we don't
           know how to translate them yet and we have to handle some functions
