@@ -1053,6 +1053,11 @@ and extract_function_call (span : Meta.span) (ctx : extraction_ctx)
           | Pure ToResult ->
               Some
                 { explicit_types = [ Implicit ]; explicit_const_generics = [] }
+          | Pure VecOfList ->
+              (* [vecOfList {T} : List T -> Result (Vec T)]: the single type
+                 argument is implicit (inferred from the [List T] argument). *)
+              Some
+                { explicit_types = [ Implicit ]; explicit_const_generics = [] }
           | Pure ResultUnwrapMut ->
               Some
                 {

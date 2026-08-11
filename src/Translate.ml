@@ -313,6 +313,552 @@ type translated_crate = {
   trait_impls : Pure.trait_impl list;
 }
 
+(** Rewrite recursive [Vec] occurrences to [List].
+
+    Background: the Aeneas Lean stdlib defines
+    [alloc.vec.Vec α := \{ l : List α // l.length ≤ Usize.max \}] (a subtype).
+    When a Rust recursive type nests through [Vec] (e.g.
+    [enum Tree \{ Leaf(u32), Node(Vec<Tree>) \}]), Lean's *nested* inductive
+    compiler specialises the container into a private copy but does not rewrite
+    inside the subtype's dependent bound [l.length ≤ Usize.max] (which mentions
+    [l]). The kernel then rejects the declaration with "non valid occurrence of
+    the datatypes being declared".
+
+    The fix: for a *recursive* occurrence only, emit [List T] (core Lean, no
+    subtype bound) instead of [alloc.vec.Vec T]. Concretely, for each type decl
+    [d] belonging to a recursive group [S], we rewrite every field type of [d]
+    bottom-up, replacing [Vec<T>] by [TBuiltin TList] applied to [T] iff [T]
+    mentions some type id in [S].
+
+    This is zero-regression: the rewrite fires *only* when the element type
+    mentions a member of the same recursive group, and those types are
+    impossible to translate today (they always produce the kernel error above).
+
+    Returns the rewritten type declarations together with, for each type that
+    had at least one field rewritten, the set of field ids that were rewritten.
+    This map feeds {!check_no_rewritten_field_uses}, which guards against silent
+    miscompilation (see there).
+
+    Scope note: we deliberately do *not* try to regenerate a well-formedness
+    predicate (e.g. [wfList]) to recover the lost [length ≤ Usize.max] bound.
+    That is a follow-up. *)
+let rewrite_recursive_vec_as_list (trans_ctx : trans_ctx)
+    (type_decls : Pure.type_decl list) :
+    Pure.type_decl list
+    * Pure.FieldId.Set.t Pure.TypeDeclId.Map.t
+    * Pure.TypeDeclId.id option =
+  (* This rewrite targets a Lean-specific limitation (Lean's nested inductive
+     compiler cannot rewrite inside [Vec]'s subtype bound). We therefore only
+     apply it for the Lean backend; the other backends are left untouched,
+     which keeps the change zero-regression for them. *)
+  if Config.backend () <> Config.Lean then
+    (type_decls, Pure.TypeDeclId.Map.empty, None)
+  else
+    (* Locate [alloc::vec::Vec]'s type-decl id, if it appears in this crate. We
+       match on the LLBC name rather than string-munging: [Vec] is an ordinary
+       [TAdt (TAdtId _, _)] in Pure, not a Pure builtin. *)
+    let vec_matcher =
+      ExtractBuiltin.NameMatcherMap.of_list
+        [ (Charon.NameMatcher.parse_pattern "alloc::vec::Vec", ()) ]
+    in
+    let vec_id =
+      List.find_map
+        (fun (d : Pure.type_decl) ->
+          if
+            Option.is_some
+              (match_name_find_opt trans_ctx d.item_meta.name vec_matcher)
+          then Some d.def_id
+          else None)
+        type_decls
+    in
+    match vec_id with
+    | None ->
+        (* No [Vec] in the crate: nothing to do. *)
+        (type_decls, Pure.TypeDeclId.Map.empty, None)
+    | Some vec_id ->
+        let groups = trans_ctx.type_ctx.type_decls_groups in
+        (* Does [ty] mention some type id in [scc]? *)
+        let rec ty_mentions_scc (scc : Pure.TypeDeclId.Set.t) (ty : Pure.ty) :
+            bool =
+          match ty with
+          | Pure.TAdt (type_id, gargs) ->
+              (match type_id with
+              | Pure.TAdtId id -> Pure.TypeDeclId.Set.mem id scc
+              | _ -> false)
+              || List.exists (ty_mentions_scc scc) gargs.types
+          | Pure.TArrow (t1, t2) ->
+              ty_mentions_scc scc t1 || ty_mentions_scc scc t2
+          | Pure.TVar _
+          | Pure.TLiteral _
+          | Pure.TTraitType _
+          | Pure.TNever
+          | Pure.TDynTrait _
+          | Pure.TError -> false
+        in
+        (* Rewrite a type bottom-up, replacing recursive [Vec<T>] by [List T]. *)
+        let rec rewrite_ty (scc : Pure.TypeDeclId.Set.t) (ty : Pure.ty) :
+            Pure.ty =
+          match ty with
+          | Pure.TAdt (type_id, gargs) -> (
+              let gargs =
+                { gargs with types = List.map (rewrite_ty scc) gargs.types }
+              in
+              match type_id with
+              | Pure.TAdtId id when id = vec_id -> (
+                  match gargs.types with
+                  (* The element type of [Vec<T, A>] is the first type argument. *)
+                  | elem :: _ when ty_mentions_scc scc elem ->
+                      Pure.TAdt
+                        ( Pure.TBuiltin Pure.TList,
+                          {
+                            types = [ elem ];
+                            const_generics = [];
+                            trait_refs = [];
+                          } )
+                  | _ -> Pure.TAdt (type_id, gargs))
+              | _ -> Pure.TAdt (type_id, gargs))
+          | Pure.TArrow (t1, t2) ->
+              Pure.TArrow (rewrite_ty scc t1, rewrite_ty scc t2)
+          | Pure.TVar _
+          | Pure.TLiteral _
+          | Pure.TTraitType _
+          | Pure.TNever
+          | Pure.TDynTrait _
+          | Pure.TError -> ty
+        in
+        let rewritten = ref Pure.TypeDeclId.Map.empty in
+        let note_rewritten (tid : Pure.TypeDeclId.id) (fid : Pure.FieldId.id) :
+            unit =
+          rewritten :=
+            Pure.TypeDeclId.Map.update tid
+              (function
+                | None -> Some (Pure.FieldId.Set.singleton fid)
+                | Some s -> Some (Pure.FieldId.Set.add fid s))
+              !rewritten
+        in
+        (* Rewrite a field list, recording rewritten field ids. *)
+        let rewrite_fields (scc : Pure.TypeDeclId.Set.t)
+            (tid : Pure.TypeDeclId.id) (fields : Pure.field list) :
+            Pure.field list =
+          List.mapi
+            (fun i (f : Pure.field) ->
+              let field_ty = rewrite_ty scc f.field_ty in
+              if field_ty <> f.field_ty then
+                note_rewritten tid (Pure.FieldId.of_int i);
+              { f with field_ty })
+            fields
+        in
+        let type_decls =
+          List.map
+            (fun (d : Pure.type_decl) ->
+              match Pure.TypeDeclId.Map.find_opt d.def_id groups with
+              | Some (Charon.GAst.RecGroup ids) ->
+                  let scc = Pure.TypeDeclId.Set.of_list ids in
+                  let kind =
+                    match d.kind with
+                    | Pure.Struct fields ->
+                        Pure.Struct (rewrite_fields scc d.def_id fields)
+                    | Pure.Enum variants ->
+                        Pure.Enum
+                          (List.map
+                             (fun (v : Pure.variant) ->
+                               {
+                                 v with
+                                 fields = rewrite_fields scc d.def_id v.fields;
+                               })
+                             variants)
+                    | Pure.Opaque -> Pure.Opaque
+                  in
+                  { d with kind }
+              | _ ->
+                  (* Not part of a recursive group: never rewrite (this is what
+                     makes the change zero-regression). *)
+                  d)
+            type_decls
+        in
+        (type_decls, !rewritten, Some vec_id)
+
+(** Coerce recursive [Vec] fields back to [Vec] at their consumption sites.
+
+    {!rewrite_recursive_vec_as_list} changed the type of recursive [Vec] fields
+    to [List T] at the type level, but the functions that consume such a field
+    were translated from LLBC expecting a [Vec T] (e.g. [for x in &field], which
+    lowers to a projection fed to [into_iter]). Left as-is this would emit
+    ill-typed Lean: a [List T] value flowing into a [Vec T] argument slot.
+
+    This pass walks every function body and, at each application whose result is
+    a [Result _] and which passes a [List T]-typed argument where the callee
+    expects a [Vec T] (the callee's corresponding domain type is [vec_id T]),
+    inserts a monadic coercion:
+    {[
+      f ... (list_arg) ...   ~~>   let v <- vecOfList list_arg in f ... v ...
+    ]}
+    The coercion [vecOfList : List T -> Result (Vec T)] (see {!Pure.VecOfList})
+    re-checks [l.length <= Usize.max] monadically -- [ok] if it holds, [fail]
+    otherwise -- exactly like array indexing pushes an unprovable-at-site bound
+    into the proof layer. Its definition is emitted into the generated output,
+    never into the Aeneas Lean stdlib ([backends/]).
+
+    Zero-regression: it only fires for [TBuiltin TList]-typed arguments, which
+    can *only* be produced by {!rewrite_recursive_vec_as_list}.
+
+    We restrict the rewrite to applications whose result type is already a
+    [Result _], which makes the transformation type-preserving ([let v <-
+    vecOfList arg in f v] has the same [Result _] type as [f arg]) and means no
+    surrounding monadic context has to be synthesised. A [List]->[Vec] mismatch
+    this pass cannot repair (a pure/non-monadic consumption, or a construction
+    supplying a [Vec] where a [List] is now expected) is left in place and
+    reported by {!check_no_rewritten_field_uses}. *)
+let coerce_list_to_vec_at_uses (vec_id : Pure.TypeDeclId.id)
+    (rewritten : Pure.FieldId.Set.t Pure.TypeDeclId.Map.t)
+    (fun_decls : pure_fun_translation list) : pure_fun_translation list =
+  (* Is [ty] the [Vec] type [vec_id]? If so return its element type. *)
+  let as_vec_elem (ty : Pure.ty) : Pure.ty option =
+    match ty with
+    | Pure.TAdt (Pure.TAdtId id, { types = [ elem ]; _ }) when id = vec_id ->
+        Some elem
+    | _ -> None
+  in
+  let is_vec_ty (ty : Pure.ty) : bool =
+    match as_vec_elem ty with Some _ -> true | None -> false
+  in
+  (* Is [e] a projection of a *rewritten* recursive field? At the Pure level its
+     type is still [Vec T] (function bodies are translated from LLBC
+     independently of the type-level rewrite), but the projector we emit returns
+     [List T], so in Lean [e] is a [List T]. Returns the element type [T]. *)
+  let as_rewritten_proj (e : Pure.texpr) : Pure.ty option =
+    let head, _ = PureUtils.destruct_apps e in
+    match head.e with
+    | Pure.Qualif
+        { id = Pure.Proj { adt_id = Pure.TAdtId tid; field_id }; _ } -> (
+        match Pure.TypeDeclId.Map.find_opt tid rewritten with
+        | Some fids when Pure.FieldId.Set.mem field_id fids -> as_vec_elem e.ty
+        | _ -> None)
+    | _ -> None
+  in
+  (* Recover, for each argument, the domain type the callee expects, by walking
+     the head's arrow type in parallel with the arguments. *)
+  let rec expected_tys (fty : Pure.ty) (args : Pure.texpr list) : Pure.ty list =
+    match args with
+    | [] -> []
+    | _ :: args' -> (
+        match fty with
+        | Pure.TArrow (dom, cod) -> dom :: expected_tys cod args'
+        | _ -> [])
+  in
+  let coerce_body (fresh_fvar_id : unit -> Pure.fvar_id) (span : Meta.span)
+      (body : Pure.texpr) : Pure.texpr =
+    let visitor =
+      object
+        inherit [_] Pure.map_expr as super
+
+        method! visit_texpr env te =
+          (* Transform children first (post-order). *)
+          let te = super#visit_texpr env te in
+          (* We can only insert a monadic coercion where the whole application
+             is already in the [Result] monad (type-preservation). *)
+          if not (PureUtils.is_result_ty te.ty) then te
+          else begin
+            let head, args = PureUtils.destruct_apps te in
+            let exp = expected_tys head.ty args in
+            let to_coerce = ref [] in
+            let new_args =
+              List.mapi
+                (fun i (arg : Pure.texpr) ->
+                  (* [arg] is a rewritten field projection (a [List T] in Lean)
+                     flowing into a [Vec T] argument slot: bind a fresh
+                     [v : Vec T] to [vecOfList arg] and pass [v] instead. *)
+                  match (List.nth_opt exp i, as_rewritten_proj arg) with
+                  | Some dom, Some elem when is_vec_ty dom ->
+                      let v =
+                        PureUtils.mk_fresh_fvar fresh_fvar_id
+                          ~basename:(Some "v") arg.ty
+                      in
+                      to_coerce := (v, elem, arg) :: !to_coerce;
+                      PureUtils.mk_texpr_from_fvar v
+                  | _ -> arg)
+                args
+            in
+            match List.rev !to_coerce with
+            | [] -> te
+            | coercions ->
+                let new_app =
+                  PureUtils.mk_apps __FILE__ __LINE__ span head new_args
+                in
+                List.fold_right
+                  (fun (v, elem, (arg : Pure.texpr)) acc ->
+                    let generics =
+                      PureUtils.mk_generic_args_from_types [ elem ]
+                    in
+                    let qualif =
+                      {
+                        Pure.id =
+                          Pure.FunOrOp (Pure.Fun (Pure.Pure Pure.VecOfList));
+                        Pure.generics;
+                      }
+                    in
+                    (* [vecOfList] emits in Lean as [List T -> Result (Vec T)],
+                       but at the Pure level its argument (a rewritten
+                       projection) is typed [Vec T]; giving the Pure builtin the
+                       type [Vec T -> Result (Vec T)] keeps the Pure IR
+                       internally consistent while the emitted Lean is
+                       well-typed. *)
+                    let coerce_fn_ty =
+                      PureUtils.mk_arrow arg.ty (PureUtils.mk_result_ty arg.ty)
+                    in
+                    let coerce_fn =
+                      { Pure.e = Pure.Qualif qualif; ty = coerce_fn_ty }
+                    in
+                    let coerce_call =
+                      PureUtils.mk_app __FILE__ __LINE__ span coerce_fn arg
+                    in
+                    let pat = PureUtils.mk_tpat_from_fvar None v in
+                    PureUtils.mk_opened_let true pat coerce_call acc)
+                  coercions new_app
+          end
+      end
+    in
+    visitor#visit_texpr () body
+  in
+  let coerce_fun (f : Pure.fun_decl) : Pure.fun_decl =
+    let _, fresh_fvar_id = Pure.FVarId.fresh_stateful_generator () in
+    PureUtils.map_open_all_fun_decl_body_expr fresh_fvar_id
+      (coerce_body fresh_fvar_id f.item_meta.span)
+      f
+  in
+  List.map
+    (fun (trans : pure_fun_translation) ->
+      {
+        f = coerce_fun trans.f;
+        loops = List.map coerce_fun trans.loops;
+        bodies = List.map coerce_fun trans.bodies;
+      })
+    fun_decls
+
+(** Guard against silent miscompilation after the [Vec] -> [List] rewrite.
+
+    {!rewrite_recursive_vec_as_list} changed the type of one or more recursive
+    fields from [Vec T] to [List T], and {!coerce_list_to_vec_at_uses} then
+    repairs every consumption site it can (a [List T] argument fed where a
+    [Vec T] is expected, inside a [Result] monad). This guard is the residual
+    safety net: it detects any [List]/[Vec] type mismatch that the coercion pass
+    could *not* repair, so we never emit ill-typed Lean silently.
+
+    Detection is purely type-based, on every application [f ... arg ...]:
+    - [arg : List T] fed where the callee expects [Vec T] (domain is [vec_id]):
+      a consumption the coercion pass left in place (e.g. a *pure*, non-monadic
+      use such as [Vec::len l], which has no surrounding [Result] to bind into).
+    - [arg : Vec T] fed where the callee (e.g. a constructor of a rewritten
+      type, whose field is now [List T]) expects [List T]: a construction that
+      would need the total [Vec -> List] ([.val]) coercion, which we do not
+      insert (the ripgrep target has no such site; see the report).
+
+    Because a [List]-typed Pure value can *only* arise from the rewrite, and a
+    [Vec]-into-[List] mismatch can only arise from constructing a rewritten
+    field, this reports exactly the un-repaired boundary crossings and nothing
+    else. When the offending argument is a field projection we name the type and
+    field; otherwise we describe the function and direction. We accumulate all
+    violations and emit a single [save_error] (not a raise) so that extraction
+    continues and the rest of the crate is still translated. *)
+let check_no_rewritten_field_uses (trans_ctx : trans_ctx)
+    (type_decls_map : Pure.type_decl Pure.TypeDeclId.Map.t)
+    (rewritten : Pure.FieldId.Set.t Pure.TypeDeclId.Map.t)
+    (vec_id : Pure.TypeDeclId.id option)
+    (fun_decls : pure_fun_translation list) : unit =
+  match vec_id with
+  | None -> ()
+  | Some vec_id ->
+    if not (Pure.TypeDeclId.Map.is_empty rewritten) then begin
+      let type_name (tid : Pure.TypeDeclId.id) : string =
+        match Pure.TypeDeclId.Map.find_opt tid type_decls_map with
+        | Some d -> name_to_string trans_ctx d.item_meta.name
+        | None -> Pure.TypeDeclId.to_string tid
+      in
+      let is_vec_ty (ty : Pure.ty) : bool =
+        match ty with
+        | Pure.TAdt (Pure.TAdtId id, _) -> id = vec_id
+        | _ -> false
+      in
+      let rec expected_tys (fty : Pure.ty) (args : Pure.texpr list) :
+          Pure.ty list =
+        match args with
+        | [] -> []
+        | _ :: args' -> (
+            match fty with
+            | Pure.TArrow (dom, cod) -> dom :: expected_tys cod args'
+            | _ -> [])
+      in
+      (* If [e] is (the application of) a field projection, return the projected
+         type id and field id, for a precise diagnostic. *)
+      let as_projection (e : Pure.texpr) : (Pure.TypeDeclId.id * Pure.FieldId.id) option =
+        let head, _ = PureUtils.destruct_apps e in
+        match head.e with
+        | Pure.Qualif { id = Pure.Proj { adt_id = Pure.TAdtId tid; field_id }; _ }
+          -> Some (tid, field_id)
+        | _ -> None
+      in
+      (* Is [e] a projection of a *rewritten* recursive field (a [List T] in
+         Lean, still typed [Vec T] in the Pure IR)? *)
+      let is_rewritten_proj (e : Pure.texpr) : bool =
+        match as_projection e with
+        | Some (tid, fid) -> (
+            match Pure.TypeDeclId.Map.find_opt tid rewritten with
+            | Some fids -> Pure.FieldId.Set.mem fid fids
+            | None -> false)
+        | None -> false
+      in
+      (* Is [e] a call to the [vecOfList] coercion we inserted? Its projection
+         argument is legitimately consumed there as a [List], so it must not be
+         reported. *)
+      let is_vec_of_list_call (head : Pure.texpr) : bool =
+        match head.e with
+        | Pure.Qualif { id = Pure.FunOrOp (Pure.Fun (Pure.Pure Pure.VecOfList)); _ }
+          -> true
+        | _ -> false
+      in
+      let seen : (string, unit) Hashtbl.t = Hashtbl.create 16 in
+      let violations : string list ref = ref [] in
+      let first_span : Meta.span option ref = ref None in
+      let check_fun (f : Pure.fun_decl) : unit =
+        let fname = name_to_string trans_ctx f.item_meta.name in
+        let span = f.item_meta.span in
+        let report (what : string) (arg : Pure.texpr) : unit =
+          let where =
+            match as_projection arg with
+            | Some (tid, fid) ->
+                " of field " ^ Pure.FieldId.to_string fid ^ " of type '"
+                ^ type_name tid ^ "'"
+            | None -> ""
+          in
+          let key = fname ^ "|" ^ what ^ "|" ^ where in
+          if not (Hashtbl.mem seen key) then begin
+            Hashtbl.add seen key ();
+            if !first_span = None then first_span := Some span;
+            violations :=
+              ("- function '" ^ fname ^ "' " ^ what ^ where) :: !violations
+          end
+        in
+        (* Report a construction (ADT constructor / struct update) of a
+           rewritten type. The supplied field value is a `Vec` in the Pure IR
+           (function bodies are translated independently of the type-level
+           rewrite), but the emitted constructor now expects a `List`, so we
+           name the type directly rather than an argument. *)
+        let report_cons (what : string) (tid : Pure.TypeDeclId.id) : unit =
+          let where = " of type '" ^ type_name tid ^ "'" in
+          let key = fname ^ "|" ^ what ^ "|" ^ where in
+          if not (Hashtbl.mem seen key) then begin
+            Hashtbl.add seen key ();
+            if !first_span = None then first_span := Some span;
+            violations :=
+              ("- function '" ^ fname ^ "' " ^ what ^ where) :: !violations
+          end
+        in
+        let visitor =
+          object
+            inherit [_] Pure.iter_expr as super
+
+            method! visit_texpr env te =
+              (match te.e with
+              | Pure.App _ ->
+                  let head, args = PureUtils.destruct_apps te in
+                  if not (is_vec_of_list_call head) then begin
+                    let exp = expected_tys head.ty args in
+                    List.iteri
+                      (fun i (arg : Pure.texpr) ->
+                        match List.nth_opt exp i with
+                        | Some dom when is_vec_ty dom && is_rewritten_proj arg ->
+                            report
+                              "consumes a recursive `Vec` field as a `Vec` \
+                               (a `List`-valued field projection flows into a \
+                               `Vec` argument that the automatic monadic \
+                               coercion could not repair -- e.g. a pure, \
+                               non-monadic use, or one nested behind another \
+                               call)"
+                              arg
+                        | _ -> ())
+                      args
+                  end
+              | _ -> ());
+              super#visit_texpr env te
+
+            (* Structural detection of constructions of a rewritten type. The
+               constructor's Pure signature still mentions `Vec` (it is not
+               retyped when functions are translated), so a type-based check on
+               the argument would miss this; we key on the constructed type id
+               instead. Conservative by design: it names any construction of a
+               rewritten type. *)
+            method! visit_adt_cons_id env (cons : Pure.adt_cons_id) =
+              (match cons.adt_id with
+              | Pure.TAdtId tid when Pure.TypeDeclId.Map.mem tid rewritten ->
+                  report_cons
+                    "constructs a value of a recursive `Vec` type, supplying \
+                     the recursive field as a `Vec` (the field is now a `List`; \
+                     the total `Vec -> List` (`.val`) coercion for constructions \
+                     is intentionally not inserted)"
+                    tid
+              | _ -> ());
+              super#visit_adt_cons_id env cons
+
+            method! visit_struct_update env (su : Pure.struct_update) =
+              (match su.struct_id with
+              | Pure.TAdtId tid when Pure.TypeDeclId.Map.mem tid rewritten ->
+                  report_cons
+                    "constructs a value of a recursive `Vec` type (via struct \
+                     update), supplying the recursive field as a `Vec` (the \
+                     field is now a `List`; the total `Vec -> List` (`.val`) \
+                     coercion for constructions is intentionally not inserted)"
+                    tid
+              | _ -> ());
+              super#visit_struct_update env su
+          end
+        in
+        match f.body with
+        | Some body -> visitor#visit_texpr () body.body
+        | None -> ()
+      in
+      List.iter
+        (fun (trans : pure_fun_translation) ->
+          check_fun trans.f;
+          List.iter check_fun trans.loops;
+          List.iter check_fun trans.bodies)
+        fun_decls;
+      match !violations with
+      | [] -> ()
+      | vs ->
+          let sites = String.concat "\n" (List.rev vs) in
+          [%save_error_opt_span] !first_span
+            ("The recursive Vec->List rewrite changed the type of one or more \
+              recursive fields from `Vec T` to `List T`, and the automatic \
+              coercion inserted at consumption sites could not repair the \
+              following boundary crossing(s). Emitting this would produce \
+              ill-typed Lean; we report it here rather than silently \
+              miscompiling (extraction continues so the rest of the crate is \
+              still translated):\n" ^ sites
+           ^ "\n\n\
+              Why this rewrite exists, and why it is fundamental: `Vec T` is \
+              modelled in Lean as the subtype `{ l : List T // l.length <= \
+              Usize.max }`. A nested-recursive inductive CANNOT carry a field \
+              whose type mentions the nested container: when Lean compiles a \
+              nested inductive it specialises the container into a private copy \
+              but never rewrites inside a dependent bound such as `l.length <= \
+              _` (which mentions `l`), so the kernel rejects the declaration \
+              outright. The length bound therefore cannot live inside the \
+              inductive at all, and the recursive field must be emitted as a \
+              plain `List T` (this is exactly what the rewrite does).\n\n\
+              Consuming the field as a `Vec` (a projection, an iteration like \
+              `for x in &field`, a `Vec::len`, etc.) requires re-establishing \
+              `l.length <= Usize.max`, a proof not available at the site; when \
+              the consumption is inside a `Result` monad we discharge this via \
+              a monadic `vecOfList : List T -> Result (Vec T)` coercion (`ok` \
+              if the bound holds, `fail` otherwise), pushing the obligation to \
+              the proof layer exactly like array indexing. The site(s) above \
+              are NOT inside such a monadic context (or are constructions), so \
+              the coercion does not apply; repairing them would require a \
+              different mechanism (e.g. an external `wfList` predicate threaded \
+              to the site, or a total `Vec -> List` coercion for \
+              constructions) and is intentionally left as a follow-up.")
+    end
+
 (* TODO: factor out the return type *)
 let translate_crate_to_pure (crate : crate) (marked_ids : marked_ids) :
     trans_ctx * translated_crate =
@@ -324,6 +870,15 @@ let translate_crate_to_pure (crate : crate) (marked_ids : marked_ids) :
 
   (* Translate all the type definitions *)
   let type_decls = SymbolicToPure.translate_type_decls trans_ctx in
+
+  (* Rewrite recursive [Vec] occurrences to [List] (see
+     {!rewrite_recursive_vec_as_list}). We do this *before* building
+     [type_decls_map] so that the rewritten field types flow consistently into
+     constructors, projectors, the auto-generated projector [_simpLemma_]s and
+     later function translation. *)
+  let type_decls, rewritten_vec_fields, vec_type_id =
+    rewrite_recursive_vec_as_list trans_ctx type_decls
+  in
 
   (* Compute the type definition map *)
   let type_decls_map =
@@ -622,6 +1177,28 @@ let translate_crate_to_pure (crate : crate) (marked_ids : marked_ids) :
     Micro.apply_passes_to_pure_fun_translations crate trans_ctx builtin_fun_sigs
       type_decls trait_impls pure_translations
   in
+
+  (* Repair the consumption sites of recursive [Vec] fields that
+     {!rewrite_recursive_vec_as_list} retyped to [List]: insert a monadic
+     [vecOfList] coercion wherever a [List] value flows into a [Vec] argument
+     inside the [Result] monad (see {!coerce_list_to_vec_at_uses}). We do this
+     *after* the micro-passes so the pure code is in its final monadic shape,
+     and *before* the guard so it only reports the sites the coercion could not
+     repair. *)
+  let pure_translations =
+    match vec_type_id with
+    | Some vec_id
+      when not (Pure.TypeDeclId.Map.is_empty rewritten_vec_fields) ->
+        coerce_list_to_vec_at_uses vec_id rewritten_vec_fields pure_translations
+    | _ -> pure_translations
+  in
+
+  (* Guard against silent miscompilation from the recursive [Vec] -> [List]
+     rewrite: if any [List]/[Vec] boundary crossing remains that the coercion
+     pass could not repair, emit a loud [Error] rather than producing ill-typed
+     output. *)
+  check_no_rewritten_field_uses trans_ctx type_decls_map rewritten_vec_fields
+    vec_type_id pure_translations;
 
   (* Return *)
   ( trans_ctx,
@@ -1354,6 +1931,11 @@ type extract_file_info = {
   noncomputable : bool;
       (** If [true] we insert a [noncomputable section] instruction at the top
           of the file *)
+  prelude : string option;
+      (** Optional raw text emitted (Lean only) right after the imports/opens
+          and before the file's namespace. Used to emit the [vecOfList]
+          coercion helper into the generated output when the recursive
+          [Vec] -> [List] rewrite fired (see {!vec_of_list_helper_lean}). *)
 }
 
 let extract_file (config : gen_config) (ctx : gen_ctx) (fi : extract_file_info)
@@ -1463,6 +2045,12 @@ let extract_file (config : gen_config) (ctx : gen_ctx) (fi : extract_file_info)
            /- You can remove the following line by using the CLI option \
            `-all-computable`: -/\n\
            noncomputable section\n";
+      (* Emit the optional prelude (e.g. the [vecOfList] coercion helper) at
+         root level, after the opens and before the namespace, so that the
+         opened namespaces ([Aeneas.Std], [Result], ...) are in scope. *)
+      (match fi.prelude with
+      | Some text -> Printf.fprintf out "%s\n" text
+      | None -> ());
       (* If we are inside the namespace: declare it *)
       if fi.in_namespace then Printf.fprintf out "\nnamespace %s\n" fi.namespace;
       (* We might need to open the namespace *)
@@ -1514,6 +2102,57 @@ let extract_file (config : gen_config) (ctx : gen_ctx) (fi : extract_file_info)
   (* Flush and close the file *)
   close_out out
 
+(** The Lean definition of the [vecOfList] coercion helper (see
+    {!Pure.VecOfList} and {!coerce_list_to_vec_at_uses}).
+
+    It is emitted verbatim into the generated output (as a file [prelude], at
+    root level after the opens) whenever the recursive [Vec] -> [List] rewrite
+    fired and a coercion was introduced. It is deliberately NOT added to the
+    Aeneas Lean stdlib ([backends/]); it is expressed purely in terms of what
+    the stdlib already provides ([alloc.vec.Vec], [Usize.max], [Result]). *)
+let vec_of_list_helper_lean : string =
+  "/- Helper emitted by Aeneas for recursive `Vec` fields that were rewritten\n\
+  \   to `List` (a nested-recursive inductive cannot store `Vec`'s\n\
+  \   `l.length <= Usize.max` bound internally). This monadic coercion\n\
+  \   re-establishes that bound at the field's consumption sites, pushing the\n\
+  \   obligation to the proof layer. It is generated output, NOT part of the\n\
+  \   Aeneas Lean standard library. -/\n\
+   def Aeneas.VecListNesting.vecOfList {T : Type} (l : List T) :\n\
+  \    Result (alloc.vec.Vec T) :=\n\
+  \  if h : l.length ≤ Usize.max then .ok ⟨l, h⟩ else .fail .panic"
+
+(** [true] iff some translated function contains a call to the [vecOfList]
+    coercion helper, i.e. the recursive [Vec] -> [List] rewrite fired and
+    {!coerce_list_to_vec_at_uses} introduced a coercion. Used to decide whether
+    to emit {!vec_of_list_helper_lean} into the generated output. *)
+let crate_uses_vec_of_list (trans_funs : pure_fun_translation list) : bool =
+  let exception Found in
+  let visitor =
+    object
+      inherit [_] Pure.iter_expr as super
+
+      method! visit_qualif env (q : Pure.qualif) =
+        (match q.id with
+        | Pure.FunOrOp (Pure.Fun (Pure.Pure Pure.VecOfList)) -> raise Found
+        | _ -> ());
+        super#visit_qualif env q
+    end
+  in
+  let check_fun (f : Pure.fun_decl) : unit =
+    match f.body with
+    | Some body -> visitor#visit_texpr () body.body
+    | None -> ()
+  in
+  try
+    List.iter
+      (fun (trans : pure_fun_translation) ->
+        check_fun trans.f;
+        List.iter check_fun trans.loops;
+        List.iter check_fun trans.bodies)
+      trans_funs;
+    false
+  with Found -> true
+
 let extract_translated_crate (filename : string) (dest_dir : string)
     (subdir : string option) (crate : crate) (trans_ctx : trans_ctx)
     (trans_crate : translated_crate) (extracted_opaque : bool ref) : unit =
@@ -1526,6 +2165,14 @@ let extract_translated_crate (filename : string) (dest_dir : string)
     trait_impls = trans_trait_impls;
   } =
     trans_crate
+  in
+  (* Whether we need to emit the [vecOfList] coercion helper into the output
+     (Lean only): true iff the recursive [Vec] -> [List] rewrite fired and a
+     coercion call was introduced (see {!crate_uses_vec_of_list}). *)
+  let fun_prelude =
+    if Config.backend () = Lean && crate_uses_vec_of_list trans_funs then
+      Some vec_of_list_helper_lean
+    else None
   in
   (* Initialize the names map by registering the keywords used in the
      language, as well as some primitive names ("u32", etc.).
@@ -1987,6 +2634,7 @@ let extract_translated_crate (filename : string) (dest_dir : string)
              custom_imports = [];
              custom_includes = [];
              noncomputable = false;
+             prelude = None;
            }
          in
          extract_file opaque_config ctx file_info;
@@ -2027,6 +2675,7 @@ let extract_translated_crate (filename : string) (dest_dir : string)
          custom_imports = [];
          custom_includes = opaque_types_module;
          noncomputable = false;
+         prelude = None;
        }
      in
      extract_file types_config ctx file_info;
@@ -2055,6 +2704,7 @@ let extract_translated_crate (filename : string) (dest_dir : string)
             custom_imports = [ types_module ];
             custom_includes = [];
             noncomputable = false;
+            prelude = None;
           }
         in
         extract_file template_clauses_config ctx file_info);
@@ -2110,6 +2760,7 @@ let extract_translated_crate (filename : string) (dest_dir : string)
              custom_imports = [];
              custom_includes = [ types_module ];
              noncomputable = false;
+             prelude = None;
            }
          in
          extract_file opaque_config ctx file_info;
@@ -2151,6 +2802,7 @@ let extract_translated_crate (filename : string) (dest_dir : string)
          custom_includes =
            [ types_module ] @ opaque_funs_module @ clauses_module;
          noncomputable = has_opaque && not !Config.all_computable;
+         prelude = fun_prelude;
        }
      in
      extract_file fun_config ctx file_info)
@@ -2183,6 +2835,7 @@ let extract_translated_crate (filename : string) (dest_dir : string)
          custom_imports = [];
          custom_includes = [];
          noncomputable = has_opaque && not !Config.all_computable;
+         prelude = fun_prelude;
        }
      in
      extract_file gen_config ctx file_info);

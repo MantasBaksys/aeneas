@@ -1257,6 +1257,15 @@ let builtin_adts () : (builtin_ty * string) list =
         (TArray, "Array");
         (TSlice, "Slice");
         (TStr, "Str");
+        (* [TList] (core Lean [List]) is emitted only by the recursive
+           [Vec] -> [List] rewrite, which is Lean-only (see
+           {!Translate.rewrite_recursive_vec_as_list}). We register it only for
+           Lean: for the other backends the lowercase [list] name clashes with a
+           reserved keyword, and since the rewrite never fires there, [TList] is
+           never produced. We use the fully-qualified [_root_.List] so the name
+           never clashes with a user-defined type called [List] (user types are
+           always emitted under the crate namespace). *)
+        (TList, "_root_.List");
         (TRawPtr Mut, "MutRawPtr");
         (TRawPtr Const, "ConstRawPtr");
       ]
@@ -1390,6 +1399,11 @@ let builtin_pure_functions () : (pure_builtin_fun_id * string) list =
         (ToResult, "lift");
         (ResultUnwrapMut, "core.result.Result.unwrap.mut");
         (GetTarget, "get_target");
+        (* Coercion helper emitted into the generated output (see
+           {!Translate.vec_of_list_helper_lean} and
+           {!Translate.coerce_list_to_vec_at_uses}). Its definition is NOT part
+           of the Aeneas Lean stdlib. *)
+        (VecOfList, "Aeneas.VecListNesting.vecOfList");
       ]
   | HOL4 ->
       (* We don't provide [FuelDecrease] and [FuelEqZero] on purpose *)
@@ -2155,6 +2169,7 @@ let ctx_compute_var_basename (span : Meta.span) (ctx : extraction_ctx)
           | TBuiltin TArray -> "a"
           | TBuiltin TSlice -> "s"
           | TBuiltin TStr -> "s"
+          | TBuiltin TList -> "l"
           | TBuiltin (TRawPtr _) -> "p"
           | TAdtId adt_id ->
               let def =

@@ -278,6 +278,7 @@ let builtin_ty_to_string (aty : builtin_ty) : string =
   | TArray -> "Array"
   | TSlice -> "Slice"
   | TStr -> "Str"
+  | TList -> "List"
   | TRawPtr Mut -> "MutRawPtr"
   | TRawPtr Const -> "ConstRawPtr"
 
@@ -508,7 +509,7 @@ let adt_variant_to_string ?(span = None) (env : fmt_env) (adt_id : type_id)
   | TBuiltin aty -> (
       (* Builtin type *)
       match aty with
-      | TArray | TSlice | TStr | TRawPtr _ ->
+      | TArray | TSlice | TStr | TList | TRawPtr _ ->
           (* Those types are opaque: we can't get there *)
           [%craise_opt_span] span "Unreachable"
       | TResult ->
@@ -561,7 +562,7 @@ let adt_field_to_string ?(span = None) (env : fmt_env) (adt_id : type_id)
   | TBuiltin aty -> (
       (* Builtin type *)
       match aty with
-      | TFuel | TArray | TSlice | TStr ->
+      | TFuel | TArray | TSlice | TStr | TList ->
           (* Opaque types: we can't get there *)
           [%craise_opt_span] span "Unreachable"
       | TResult | TError | TSum | TLoopResult | TRawPtr _ ->
@@ -703,7 +704,7 @@ and adt_pat_to_string_core (span : Meta.span option) (env : fmt_env)
             else
               [%craise_opt_span] span
                 "Unreachable: improper variant id for fuel type"
-        | TArray | TSlice | TStr ->
+        | TArray | TSlice | TStr | TList ->
             [%cassert_opt_span] span (variant_id = None) "Ill-formed value";
             let fields =
               List.mapi (fun i v -> string_of_int i ^ " -> " ^ v) fields
@@ -864,6 +865,7 @@ let pure_builtin_fun_id_to_string (fid : pure_builtin_fun_id) : string =
   | Discriminant -> "@discriminant"
   | ResultUnwrapMut -> "@resultUnwrapMut"
   | GetTarget -> "@getTarget"
+  | VecOfList -> "@vecOfList"
 
 let regular_fun_id_to_string (env : fmt_env) (fun_id : fun_id) : string =
   match fun_id with
