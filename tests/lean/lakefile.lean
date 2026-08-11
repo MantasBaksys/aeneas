@@ -72,6 +72,9 @@ package «tests» {}
 @[default_target] lean_lib Loops
 @[default_target] lean_lib LoopsAdts
 @[default_target] lean_lib LoopControlFlow
+@[default_target] lean_lib LoopBreakDeadBorrow
+@[default_target] lean_lib LoopEndedSharedLoanBorrows
+@[default_target] lean_lib LoopNonlocalExitSharedTail
 @[default_target] lean_lib LoopsBreakOuter
 @[default_target] lean_lib LoopsContinueOuter
 @[default_target] lean_lib LoopSharedBorrowProj

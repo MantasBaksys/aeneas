@@ -388,6 +388,41 @@ module type PrimMatcher = sig
     tavalue ->
     tavalue
 
+  (** Match two ended shared loans.
+
+      An ended shared loan has no loan id and no projection marker (its marker is
+      always [PNone] when the loan gets ended), but its shared value now behaves
+      as a regular value which may still contain borrows/loans that we need to
+      match.
+
+      Parameters:
+      - [match_values]
+      - [ctx0]
+      - [ctx1]
+      - [ty0]
+      - [sv0]
+      - [av0]
+      - [ty1]
+      - [sv1]
+      - [av1]
+      - [ty]: result of matching ty0 and ty1
+      - [sv]: result of matching sv0 and sv1
+      - [av]: result of matching av0 and av1 *)
+  val match_aended_shared_loans :
+    tvalue_matcher ->
+    eval_ctx ->
+    eval_ctx ->
+    rty ->
+    tvalue ->
+    tavalue ->
+    rty ->
+    tvalue ->
+    tavalue ->
+    rty ->
+    tvalue ->
+    tavalue ->
+    tavalue
+
   (** Parameters:
       - [match_values]
       - [ctx0]

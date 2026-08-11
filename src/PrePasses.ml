@@ -1030,8 +1030,318 @@ let update_loops (crate : crate) (f : fun_decl) : fun_decl =
       end
     in
 
+    (* Tail-duplication (continuation-sinking) normalization.
+
+       The loop non-local-exit flattening below ([rewrite_loop_body]) can only
+       resolve an early [return] out of a loop when the loop's own block ends
+       with a tail from which a [return]/[abort] can be recovered
+       ([decompose_after]). When the loop is the last statement of a `match`
+       arm and the `match` has a *shared* continuation after it (some other arm
+       falls through), the loop's own block ends with nothing: the tail lives in
+       the enclosing block, [decompose_after] returns [None], and the loop is
+       flattened into a genuine non-local exit that then trips the borrow guard.
+
+       We fix this structurally, before any loop rewriting, by sinking such a
+       shared continuation into each fall-through arm of the switch, so every
+       arm ends with its own copy of the tail (ending in [return]/[abort]) and
+       the loop regains a locally-recoverable continuation. Each execution path
+       still runs the tail exactly once: arms that already terminate
+       ([return]/[abort]/[break]/[continue]) never reached the tail and get no
+       copy. To avoid gratuitous code-size blow-up and output churn we only
+       trigger on the exact configuration that would otherwise be rejected: a
+       switch with a fall-through arm containing a loop that carries a borrow
+       and performs a non-local exit. *)
+    let block_falls_through (b : block) : bool =
+      (* An arm "falls through" to the shared continuation unless its last
+         statement transfers control elsewhere. *)
+      match List.rev b.statements with
+      | { kind = Return | Abort _ | Break _ | Continue _ | UnwindResume; _ } :: _
+        -> false
+      | _ -> true
+    in
+    let tail_is_sinkable (tail : statement list) : bool =
+      (* We can only sink a tail from which [decompose_after] can later recover
+         a synthetic exit, i.e. one ending in a [return]/[abort]. *)
+      match List.rev tail with
+      | { kind = Return | Abort _; _ } :: _ -> true
+      | _ -> false
+    in
+    let loop_body_has_nonlocal_exit (lb : block) : bool =
+      (* Does the loop body [lb] perform an exit that escapes [lb]? Any [return]
+         escapes the whole function (hence [lb]); a [break]/[continue] escapes
+         when its index targets a loop enclosing [lb] (i.e. [i > depth], where
+         [depth] counts the loops nested inside [lb] above the statement). *)
+      let found = ref false in
+      let visitor =
+        object
+          inherit [_] iter_statement as super
+          method! visit_Loop depth loop = super#visit_Loop (depth + 1) loop
+
+          method! visit_statement depth st =
+            (match st.kind with
+            | Return -> found := true
+            | (Break i | Continue i) when i > depth -> found := true
+            | _ -> ());
+            super#visit_statement depth st
+        end
+      in
+      visitor#visit_block 0 lb;
+      !found
+    in
+    let block_has_dangerous_loop (b : block) : bool =
+      (* Does [b] contain a loop that would trip the borrow guard, i.e. one that
+         both carries a borrow across its exit and performs a non-local exit? *)
+      let found = ref false in
+      let visitor =
+        object
+          inherit [_] iter_statement as super
+
+          method! visit_Loop env lb =
+            if
+              (not !found)
+              && loop_body_has_nonlocal_exit lb && loop_refs_borrow lb
+            then found := true;
+            super#visit_Loop env lb
+        end
+      in
+      visitor#visit_block 0 b;
+      !found
+    in
+    let switch_arms (sw : switch) : block list =
+      match sw with
+      | If (_, b0, b1) -> [ b0; b1 ]
+      | SwitchInt (_, _, cases, otherwise) ->
+          List.map snd cases @ [ otherwise ]
+      | Match (_, cases, otherwise) ->
+          List.map snd cases @ Option.to_list otherwise
+    in
+    let map_switch_arms (f : block -> block) (sw : switch) : switch =
+      match sw with
+      | If (op, b0, b1) -> If (op, f b0, f b1)
+      | SwitchInt (op, ty, cases, otherwise) ->
+          SwitchInt
+            (op, ty, List.map (fun (l, b) -> (l, f b)) cases, f otherwise)
+      | Match (p, cases, otherwise) ->
+          Match
+            (p, List.map (fun (v, b) -> (v, f b)) cases, Option.map f otherwise)
+    in
+    let switch_needs_taildup (sw : switch) : bool =
+      List.exists
+        (fun arm -> block_falls_through arm && block_has_dangerous_loop arm)
+        (switch_arms sw)
+    in
+    (* Sink a shared tail into the fall-through arms of the first switch that
+       needs it. Consumes the tail (removes it from this level). Descent into
+       the modified arms (which now carry a copy of the tail) is performed by
+       the enclosing map visitor, so nested occurrences are handled too. *)
+    let rec sink_stmts (stmts : statement list) : statement list =
+      match stmts with
+      | ({ kind = Switch sw; _ } as st) :: tail
+        when tail <> [] && tail_is_sinkable tail && switch_needs_taildup sw ->
+          let sw =
+            map_switch_arms
+              (fun arm ->
+                if block_falls_through arm then
+                  { arm with statements = arm.statements @ tail }
+                else arm)
+              sw
+          in
+          [ { st with kind = Switch sw } ]
+      | st :: rest -> st :: sink_stmts rest
+      | [] -> []
+    in
+    let taildup_visitor =
+      object
+        inherit [_] map_statement_base as super
+
+        method! visit_block env b =
+          (* Sink at this level first, then recurse into the (possibly
+             rewritten) children so that tails sunk into arms are themselves
+             normalized. *)
+          super#visit_block env { b with statements = sink_stmts b.statements }
+      end
+    in
+
+    let body =
+      { body with body = taildup_visitor#visit_block () body.body }
+    in
     let body = initialize_storage_live body in
     let body = { body with body = visitor#visit_block 0 body.body } in
+
+    (* Sink dead, borrow-carrying [storage_dead]s onto the loop's break edges.
+
+       After the loop-exit flattening above, a loop that is exited only via
+       local [break 0] is immediately followed by the [storage_dead] statements
+       that release the loop's own locals — e.g. the iterator's [Option]
+       temporary and the [&mut] borrow of the iterator. Charon emits those
+       *after* the loop, and on the [continue] (back-)edge it already kills the
+       same locals before [continue 0], but on a [break] edge it does not: the
+       locals are still live at the break, so a local that holds a borrow only
+       on the [break] path (typically the [Option<&T>] scrutinee, which is
+       [Some(&x)] at an explicit [break] but [None] at for-loop exhaustion)
+       carries that borrow into the break context.
+
+       The symbolic interpreter joins the break contexts of every exit site of
+       a loop into a template. When one break carries a live borrow in such a
+       local and another does not, the join introduces a loan-projector
+       abstraction into the template that the borrow-free exit cannot match; a
+       lone projection marker then survives every reduce/collapse stage and
+       trips the marker sanity check ([InterpReduceCollapse.ml]).
+
+       We restore symmetry by sinking those trailing, borrow-carrying
+       [storage_dead]s to *before* every [break 0] that exits the loop, so the
+       dead borrow is released on the break edge and every break context is
+       borrow-free — exactly the treatment Charon already gives the [continue]
+       edge. This is semantics-preserving: every loop exit goes through a
+       [break 0]; the released locals are dead afterwards (they are precisely
+       the ones [storage_dead] immediately after the loop); and by Charon's
+       storage discipline each is live-and-not-yet-dead at each break, so no
+       double deallocation is introduced. To stay surgical we only fire on the
+       simplest shape (all exits are [break 0] to this loop) and only sink
+       [storage_dead]s of borrow-carrying locals, leaving borrow-free loops
+       byte-identical. *)
+    let sink_break_dead_borrows (body : block gexpr_body) : block gexpr_body =
+      let sink_local_ty =
+        List.fold_left
+          (fun m (local : local) -> LocalId.Map.add local.index local.local_ty m)
+          LocalId.Map.empty body.locals.locals
+      in
+      let is_sinkable_sd (st : statement) : bool =
+        match st.kind with
+        | StorageDead id -> (
+            match LocalId.Map.find_opt id sink_local_ty with
+            | Some ty -> ty_has_borrow ty
+            | None -> false)
+        | _ -> false
+      in
+      let rec split_leading_sd (acc : statement list) (stl : statement list) :
+          statement list * statement list =
+        match stl with
+        | ({ kind = StorageDead _; _ } as st) :: rest ->
+            split_leading_sd (st :: acc) rest
+        | _ -> (List.rev acc, stl)
+      in
+      (* The loop is exited only via [break 0] to this loop: no surviving
+         [return], no [break]/[continue] targeting an enclosing loop, and no
+         [break] to this loop from a nested inner loop (which we would not
+         reach at depth 0). Depth counts the loops nested inside this one. *)
+      let exits_are_simple (lb : block) : bool =
+        let ok = ref true in
+        let visitor =
+          object
+            inherit [_] iter_statement as super
+            method! visit_Loop depth loop = super#visit_Loop (depth + 1) loop
+
+            method! visit_statement depth st =
+              (match st.kind with
+              | Return -> ok := false
+              | Break i when not (i < depth || (depth = 0 && i = 0)) ->
+                  ok := false
+              | Continue i when i > depth -> ok := false
+              | _ -> ());
+              super#visit_statement depth st
+          end
+        in
+        visitor#visit_block 0 lb;
+        !ok
+      in
+      (* Number of [break 0]s that exit [lb] directly (at loop-depth 0). The
+         marker-survival bug only arises when the interpreter *joins* two or
+         more break contexts of differing borrow shape
+         ([InterpLoopsFixedPoint.compute_loop_break_context]); a loop with a
+         single break takes the no-join path and is never affected. Requiring
+         at least two exiting breaks keeps the transform surgical: single-break
+         loops (e.g. a plain [while let Some(_) = it.next()]) are left
+         byte-identical, so their translation does not drift. *)
+      let count_exiting_breaks (lb : block) : int =
+        let n = ref 0 in
+        let visitor =
+          object
+            inherit [_] iter_statement as super
+            method! visit_Loop depth loop = super#visit_Loop (depth + 1) loop
+
+            method! visit_statement depth st =
+              (match st.kind with
+              | Break 0 when depth = 0 -> incr n
+              | _ -> ());
+              super#visit_statement depth st
+          end
+        in
+        visitor#visit_block 0 lb;
+        !n
+      in
+      (* Insert [sink] (copied with each break's span) before every [break 0]
+         that exits [lb], i.e. every [break 0] at loop-depth 0 — including those
+         nested inside switches — but not breaks inside nested inner loops. *)
+      let insert_before_breaks (sink : statement list) (lb : block) : block =
+        let v =
+          object (self)
+            inherit [_] map_statement_base as super
+            method! visit_Loop depth loop = super#visit_Loop (depth + 1) loop
+
+            method! visit_block depth b =
+              if depth = 0 then
+                let expand st =
+                  match st.kind with
+                  | Break 0 ->
+                      let sink' =
+                        List.map
+                          (fun s ->
+                            {
+                              s with
+                              span = st.span;
+                              statement_id = StatementId.zero;
+                            })
+                          sink
+                      in
+                      sink' @ [ self#visit_statement depth st ]
+                  | _ -> [ self#visit_statement depth st ]
+                in
+                {
+                  b with
+                  statements = List.flatten (List.map expand b.statements);
+                }
+              else b
+          end
+        in
+        v#visit_block 0 lb
+      in
+      let sink_visitor =
+        object
+          inherit [_] map_statement_base as super
+
+          method! visit_block env b =
+            (* Recurse into children first (handles nested loops and switch
+               arms), then sink at this level. *)
+            let b = super#visit_block env b in
+            let rec sink_here (stl : statement list) : statement list =
+              match stl with
+              | ({ kind = Loop lb; _ } as st) :: after ->
+                  let leading, rest = split_leading_sd [] after in
+                  let to_sink = List.filter is_sinkable_sd leading in
+                  if
+                    to_sink <> []
+                    && exits_are_simple lb
+                    && count_exiting_breaks lb >= 2
+                  then
+                    let lb = insert_before_breaks to_sink lb in
+                    let keep =
+                      List.filter
+                        (fun s -> not (List.memq s to_sink))
+                        leading
+                    in
+                    { st with kind = Loop lb } :: (keep @ sink_here rest)
+                  else st :: sink_here after
+              | st :: rest -> st :: sink_here rest
+              | [] -> []
+            in
+            { b with statements = sink_here b.statements }
+        end
+      in
+      { body with body = sink_visitor#visit_block () body.body }
+    in
+    let body = sink_break_dead_borrows body in
+
     let body =
       {
         body with

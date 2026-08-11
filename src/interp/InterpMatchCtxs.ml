@@ -195,12 +195,22 @@ let compute_abs_borrows_loans_maps (span : Meta.span) (explore : abs -> bool)
             [%cassert] span (is_aignored child.value) "Not implemented yet";
             [%cassert] span (is_aignored given_back.value) "Not implemented yet"
         | AEndedSharedLoan (sv, child) ->
-            (* TODO: there may be a problem here, because we need the marker which was
-               in [ASharedLoan] to explore the shared value and register its borrows.
-               For now we check that there are no loans/borrows inside. *)
-            [%cassert] span
-              (not (tvalue_has_loans_or_borrows (Some span) ctx sv))
-              "Not implemented yet";
+            (* The shared loan has ended, but its shared value now behaves as a
+               regular value which may still contain borrows and loans (e.g. the
+               shared value of a shared loan over [&&T], or over a recursive type
+               such as ripgrep's [Hir] whose [Concat] variant holds a
+               [Vec<Hir>]). We must register those borrows/loans, exactly like we
+               do for the live [ASharedLoan] case above, otherwise the
+               borrow/loan maps would be incomplete and the collapse/merge policy
+               that consumes them could mismatch or wrongly end abstractions.
+
+               An [AEndedSharedLoan] carries no projection marker, but every site
+               that turns an [ASharedLoan] into an [AEndedSharedLoan] asserts the
+               marker is [PNone] (see [InterpBorrows.ml], the shared-loan-ending
+               visitors), so the correct marker to explore the shared value with
+               is [PNone] -- which also matches the entry sanity check [pm =
+               PNone] above. *)
+            self#visit_tvalue (abs, PNone) sv;
             self#visit_tavalue (abs, pm) child
 
       (** Make sure we don't register the ignored ids *)
@@ -552,6 +562,18 @@ module MakeMatcher (M : PrimMatcher) : Matcher = struct
               (not (value_has_borrows sv.value));
             M.match_ashared_loans match_rec ctx0 ctx1 v0.ty pm0 id0 sv0 av0
               v1.ty pm1 id1 sv1 av1 ty sv av
+        | AEndedSharedLoan (sv0, av0), AEndedSharedLoan (sv1, av1) ->
+            [%ldebug "ended shared loans"];
+            (* An ended shared loan carries neither a loan id nor a projection
+               marker, but its shared value may still contain borrows/loans
+               (e.g. a shared loan nested inside the shared value, as happens for
+               recursive types reborrowed through a projection). We match the
+               shared value and the child, then let the primitive matcher
+               reconstruct. *)
+            let sv = match_rec sv0 sv1 in
+            let av = match_arec av0 av1 in
+            M.match_aended_shared_loans match_rec ctx0 ctx1 v0.ty sv0 av0 v1.ty
+              sv1 av1 ty sv av
         | AMutLoan (pm0, id0, av0), AMutLoan (pm1, id1, av1) ->
             [%ldebug "mut loans"];
             [%ldebug "mut loans: matching children values"];
@@ -1706,6 +1728,9 @@ module MakeJoinMatcher (S : MatchJoinState) : PrimMatcher = struct
   let match_ashared_loans _ _ _ _ _ _ _ _ _ _ _ _ _ =
     [%craise_recover] S.recover span "Unreachable"
 
+  let match_aended_shared_loans _ _ _ _ _ _ _ _ _ _ _ =
+    [%craise_recover] S.recover span "Unreachable"
+
   let match_amut_loans _ _ _ _ _ _ _ _ _ _ =
     [%craise_recover] S.recover span "Unreachable"
 
@@ -2034,6 +2059,14 @@ struct
     [%sanity_check_recover] S.recover span (pm0 = PNone && pm1 = PNone);
     let bid = match_loan_id id0 id1 in
     let value = ALoan (ASharedLoan (PNone, bid, v, av)) in
+    { value; ty }
+
+  let match_aended_shared_loans (_ : tvalue_matcher) (_ : eval_ctx)
+      (_ : eval_ctx) _ty0 _v0 _av0 _ty1 _v1 _av1 ty v av : tavalue =
+    (* We are checking whether two environments are equivalent: an ended shared
+       loan has no projection marker and no loan id, so we simply rebuild it from
+       the matched shared value [v] and child [av]. *)
+    let value = ALoan (AEndedSharedLoan (v, av)) in
     { value; ty }
 
   let match_amut_loans (_ : tvalue_matcher) (ctx0 : eval_ctx) (ctx1 : eval_ctx)
