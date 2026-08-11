@@ -6,7 +6,6 @@ open TypesUtils
 open Expressions
 open ExpressionsUtils
 open LlbcAst
-open Utils
 open LlbcAstUtils
 open Errors
 
@@ -399,7 +398,7 @@ let update_array_default (crate : crate) : crate =
     in
     visitor#visit_crate None crate
 
-exception FoundStatement of statement
+type loop_exit = LoopReturn | LoopBreak of int | LoopContinue of int
 
 (** Check that loops:
     - do not contain early returns
@@ -502,209 +501,587 @@ let update_loops (crate : crate) (f : fun_decl) : fun_decl =
   let f0 = f in
   let span = f.item_meta.span in
 
-  let visitor =
-    object (self)
-      inherit [_] map_statement as super
+  let update_body (body : block gexpr_body) : block gexpr_body =
+    let new_locals = ref [] in
+    let _, gen =
+      LocalId.mk_stateful_generator_starting_at_id
+        (LocalId.of_int (List.length body.locals.locals))
+    in
+    let fresh_local ty name =
+      let local =
+        { index = gen (); local_ty = ty; name; span = f.item_meta.span }
+      in
+      new_locals := local :: !new_locals;
+      local.index
+    in
+    let bool_ty = TLiteral TBool in
+    let mk_statement ?(span = span) kind : statement =
+      { span; statement_id = StatementId.zero; kind; comments_before = [] }
+    in
+    let mk_bool_place (id : LocalId.id) : place =
+      { kind = PlaceLocal id; ty = bool_ty }
+    in
+    let mk_set_bool (st_span : Meta.span) (id : LocalId.id) (b : bool) :
+        statement =
+      let cv : constant_expr = { kind = CLiteral (VBool b); ty = bool_ty } in
+      mk_statement ~span:st_span
+        (Assign (mk_bool_place id, Use (Constant cv, NoRetag)))
+    in
+    let mk_place (id : LocalId.id) (ty : ty) : place =
+      { kind = PlaceLocal id; ty }
+    in
+    let mk_move_place (id : LocalId.id) (ty : ty) : operand =
+      Move (mk_place id ty)
+    in
+    let mk_dummy_initializers (st_span : Meta.span) (dest : place) (ty : ty) :
+        statement list option =
+      let ty_contains_ref (ty : ty) : bool =
+        let found = ref false in
+        let visitor =
+          object
+            inherit [_] iter_ty as super
+            method! visit_TRef _ _ _ _ = found := true
+            method! visit_TRawPtr _ _ _ = found := true
+            method! visit_TDynTrait _ _ = found := true
+            method! visit_TFnPtr _ _ = found := true
+            method! visit_TFnDef _ _ = found := true
 
-      (* [after]: the list of statements coming *after* this one in this block.
-
-         We return:
-         - the list of statements resulting from updating the current statement
-         - the list of statements to put after and that are yet to be updated
-           (the reason is that we might have moved some of those statements
-           inside the current statement).
-      *)
-      method update_statement (depth : int) (st : statement)
-          (after : statement list) : statement list * statement list =
-        match st.kind with
-        | Loop loop -> (
-            (* Recursively update the loop.
-
-               Note that doing this will raise an exception if we find a loop with
-               an early return. *)
-            try ([ { st with kind = self#visit_Loop (depth + 1) loop } ], after)
-            with FoundStatement return_st ->
-              (* An exception was raised: it means we found a return in the loop: attempt
-                 to replace it with a break.
-
-                 There are 2 cases:
-                 - either the loop does not contain any break, in which case we
-                   can simply replace the return with a break, and move the return
-                   after the loop (this is transformation 1 above)
-                 - or there is already a break in the loop: we can apply transformation 2
-                   (resp., 3) if the statements after the loop end with a return (resp., a panic)
-              *)
-              let block_has_no_breaks (b : block) : bool =
-                let visitor =
-                  object
-                    inherit [_] iter_statement
-                    method! visit_Break _ _ = raise Found
-                  end
-                in
-                try
-                  visitor#visit_block () b;
-                  true
-                with Found -> false
+            method! visit_TAdt env tref =
+              (match tref.id with
+              | TAdtId def_id -> (
+                  match TypeDeclId.Map.find_opt def_id crate.type_decls with
+                  | Some { kind = Struct _ | Enum _; _ } -> ()
+                  | _ -> found := true)
+              | _ -> ());
+              (* Still visit generic arguments: [Option<unsupported>] can be
+                 built as [None], but introducing such a dummy makes downstream
+                 extraction demand declarations that were otherwise irrelevant. *)
+              super#visit_TAdt env tref
+          end
+        in
+        visitor#visit_ty () ty;
+        !found
+      in
+      let rec mk_dummy_operand (ty : ty) : (statement list * operand) option =
+        if ty_contains_ref ty then None
+        else
+          match ty with
+          | TLiteral lit_ty ->
+              let lit =
+                match lit_ty with
+                | TBool -> Some (Values.VBool false)
+                | TChar -> None
+                | TFloat _ -> None
+                | TInt int_ty ->
+                    Some (Values.VScalar (Values.SignedScalar (int_ty, Z.zero)))
+                | TUInt uint_ty ->
+                    Some
+                      (Values.VScalar (Values.UnsignedScalar (uint_ty, Z.zero)))
               in
-              if block_has_no_breaks loop then (* Transformation 1 *)
-                let block_replace (b : block) : block =
-                  let visitor =
-                    object
-                      inherit [_] map_statement
-                      method! visit_Loop i loop = super#visit_Loop (i + 1) loop
-
-                      method! visit_Return i =
-                        [%sanity_check] span (i = 0);
-                        (* Replace the return with a break *)
-                        Break i
-                    end
+              Option.map
+                (fun lit ->
+                  let cv : constant_expr = { kind = CLiteral lit; ty } in
+                  ([], Constant cv))
+                lit
+          | TAdt { id = TTuple; generics } ->
+              mk_dummy_aggregate_from_tys ty
+                (AggregatedAdt ({ id = TTuple; generics }, None, None))
+                generics.types
+          | TAdt { id = TAdtId def_id; generics } -> (
+              let def =
+                [%silent_unwrap_opt_span] (Some st_span)
+                  (TypeDeclId.Map.find_opt def_id crate.type_decls)
+              in
+              match def.kind with
+              | Struct _ ->
+                  let field_tys =
+                    Substitute.type_decl_get_instantiated_field_etypes def None
+                      generics
                   in
-                  visitor#visit_block 0 b
-                in
-                let loop = block_replace loop in
-                let loop : statement = { st with kind = Loop loop } in
-                let loop = super#visit_statement depth loop in
-                let return : statement =
-                  {
-                    span = st.span;
-                    statement_id =
-                      StatementId.zero (* we'll refresh this later *);
-                    kind = Return;
-                    comments_before = [];
-                  }
-                in
-                ([ loop; return ], after)
-              else
-                (* Transformations 2 and 3 *)
-                (* Check if the statements after the loop end with a return or a panic.
-                   We output the statements with which to replace breaks.
-                *)
-                let rec decompose_after (after : statement list) :
-                    statement list =
-                  match after with
-                  | [] ->
-                      [%craise] span
-                        "Early returns out of loops are not supported yet: \
-                         this loop contains both a `break` and an early \
-                         `return`, but it is not directly followed by the \
-                         function's `return`/panic (e.g. it is nested inside \
-                         another loop, an `if`, or a `match`), so the early \
-                         return cannot be rewritten as a simple break. \
-                         Encoding this requires control-flow flattening (a \
-                         synthetic exit-reason threaded out of the loop), \
-                         which Aeneas does not implement yet."
-                  | st :: after -> (
-                      match st.kind with
-                      | Return -> [ { st with kind = Break 0 } ]
-                      | Abort _ -> [ st ]
-                      | _ -> st :: decompose_after after)
-                in
-                let after = decompose_after after in
-                let replace (st : statement) : statement list =
+                  mk_dummy_aggregate_from_tys ty
+                    (AggregatedAdt ({ id = TAdtId def_id; generics }, None, None))
+                    field_tys
+              | Enum variants -> (
+                  match variants with
+                  | [] -> None
+                  | variant :: _ ->
+                      let field_tys =
+                        Substitute.type_decl_get_instantiated_field_etypes def
+                          (Some variant.id) generics
+                      in
+                      mk_dummy_aggregate_from_tys ty
+                        (AggregatedAdt
+                           ( { id = TAdtId def_id; generics },
+                             Some variant.id,
+                             None ))
+                        field_tys)
+              | Union _ | Opaque | Alias _ | TDeclError _ -> None)
+          | TArray (field_ty, len) -> (
+              match (len.kind, mk_dummy_operand field_ty) with
+              | ( CLiteral (Values.VScalar (Values.UnsignedScalar (Usize, n))),
+                  Some ([], op) )
+                when Z.leq Z.zero n && Z.leq n (Z.of_int 1024) ->
+                  let ops = List.init (Z.to_int n) (fun _ -> op) in
+                  mk_dummy_aggregate ty (AggregatedArray (field_ty, len)) ops
+              | _ -> None)
+          | _ -> None
+      and mk_dummy_aggregate_from_tys (ty : ty) (kind : aggregate_kind)
+          (field_tys : ty list) : (statement list * operand) option =
+        let fields = List.map mk_dummy_operand field_tys in
+        if List.exists Option.is_none fields then None
+        else
+          let fields = List.map (fun x -> [%silent_unwrap] st_span x) fields in
+          let mk_field field_ty (field_stmts, field_op) =
+            let tmp = fresh_local field_ty (Some "aeneas_dummy") in
+            let tmp_place = mk_place tmp field_ty in
+            ( field_stmts
+              @ [
+                  mk_statement ~span:st_span
+                    (Assign (tmp_place, Use (field_op, NoRetag)));
+                ],
+              mk_move_place tmp field_ty )
+          in
+          let field_stmts, field_ops =
+            List.split (List.map2 mk_field field_tys fields)
+          in
+          let tmp = fresh_local ty (Some "aeneas_dummy") in
+          let tmp_place = mk_place tmp ty in
+          let stmts =
+            List.flatten field_stmts
+            @ [
+                mk_statement ~span:st_span
+                  (Assign (tmp_place, Aggregate (kind, field_ops)));
+              ]
+          in
+          Some (stmts, mk_move_place tmp ty)
+      and mk_dummy_aggregate (ty : ty) (kind : aggregate_kind)
+          (field_ops : operand list) : (statement list * operand) option =
+        let tmp = fresh_local ty (Some "aeneas_dummy") in
+        let tmp_place = mk_place tmp ty in
+        let stmts =
+          [
+            mk_statement ~span:st_span
+              (Assign (tmp_place, Aggregate (kind, field_ops)));
+          ]
+        in
+        Some (stmts, mk_move_place tmp ty)
+      in
+      match mk_dummy_operand ty with
+      | None -> None
+      | Some (stmts, op) ->
+          Some
+            (stmts
+            @ [ mk_statement ~span:st_span (Assign (dest, Use (op, NoRetag))) ]
+            )
+    in
+    let body_has_nonlocal_loop_exit (body : block) : bool =
+      let found = ref false in
+      let visitor =
+        object
+          inherit [_] iter_statement as super
+          method! visit_Loop depth loop = super#visit_Loop (depth + 1) loop
+
+          method! visit_statement depth st =
+            (match st.kind with
+            | Return when depth > 0 -> found := true
+            | (Break i | Continue i) when i > 0 -> found := true
+            | _ -> ());
+            super#visit_statement depth st
+        end
+      in
+      visitor#visit_block 0 body;
+      !found
+    in
+    let initialize_storage_live (body : block gexpr_body) : block gexpr_body =
+      if not (body_has_nonlocal_loop_exit body.body) then body
+      else
+        let locals =
+          List.fold_left
+            (fun locals (local : local) ->
+              LocalId.Map.add local.index local locals)
+            LocalId.Map.empty body.locals.locals
+        in
+        let visitor =
+          object
+            inherit [_] map_statement_base as super
+
+            method! visit_block env b =
+              let b = super#visit_block env b in
+              let update st =
+                match st.kind with
+                | StorageLive id ->
+                    let local =
+                      [%silent_unwrap_opt_span] (Some st.span)
+                        (LocalId.Map.find_opt id locals)
+                    in
+                    let place = mk_place id local.local_ty in
+                    let init =
+                      match
+                        mk_dummy_initializers st.span place local.local_ty
+                      with
+                      | None -> []
+                      | Some init -> init
+                    in
+                    st :: init
+                | _ -> [ st ]
+              in
+              {
+                b with
+                statements = List.flatten (List.map update b.statements);
+              }
+          end
+        in
+        { body with body = visitor#visit_block () body.body }
+    in
+    (* Non-local control-flow flattening (the transformations below) reconstructs
+       a loop's non-local exits (early [return], [break]/[continue] to an outer
+       loop) by threading synthetic boolean flags and re-raising the exit after
+       the loop. This is sound only when the loop's carried state is borrow-free:
+       the symbolic interpreter joins the break contexts of every exit site of a
+       loop, and if a value that carries a borrow (e.g. an iterator holding
+       [&[T]], or a [&mut]/[&] local) is live across a non-local exit, the join
+       must reconcile a loan over a borrow-containing value across paths that the
+       interpreter cannot express (it restricts loops to innermost control flow
+       precisely because of this). Naively flattening such a loop makes the
+       downstream fixed-point join fail deep in the pipeline (surfacing as an
+       opaque internal error and a [sorry] body) instead of an honest rejection.
+
+       We therefore detect loops whose carried state crosses a borrow over a
+       non-local exit and reject them here, cleanly, before any rewriting. The
+       borrow-free case (scalars, owned data) is fully supported. *)
+    let ty_has_borrow (ty : ty) : bool =
+      let found = ref false in
+      let visited = ref TypeDeclId.Set.empty in
+      let rec go (ty : ty) : unit =
+        if !found then ()
+        else
+          match ty with
+          | TRef _ | TRawPtr _ -> found := true
+          | TAdt { id = TTuple; generics } -> List.iter go generics.types
+          | TAdt { id = TBuiltin _; generics } -> List.iter go generics.types
+          | TAdt { id = TAdtId def_id; generics } ->
+              (* Borrows may appear either as type arguments (e.g.
+                 [PhantomData<&'a T>]) or inside the declaration's own fields
+                 (e.g. [slice::Iter] stores a raw pointer into the borrowed
+                 slice), so we follow both, memoising on the declaration id to
+                 terminate on recursive types. *)
+              List.iter go generics.types;
+              if (not !found) && not (TypeDeclId.Set.mem def_id !visited) then begin
+                visited := TypeDeclId.Set.add def_id !visited;
+                match TypeDeclId.Map.find_opt def_id crate.type_decls with
+                | Some ({ kind = Struct _; _ } as def) ->
+                    let field_tys =
+                      Substitute.type_decl_get_instantiated_field_etypes def
+                        None generics
+                    in
+                    List.iter go field_tys
+                | Some ({ kind = Enum variants; _ } as def) ->
+                    List.iter
+                      (fun (v : variant) ->
+                        let field_tys =
+                          Substitute.type_decl_get_instantiated_field_etypes def
+                            (Some v.id) generics
+                        in
+                        List.iter go field_tys)
+                      variants
+                | _ -> ()
+              end
+          | TArray (t, _) | TSlice t -> go t
+          | _ -> ()
+      in
+      go ty;
+      !found
+    in
+    let local_tys =
+      List.fold_left
+        (fun m (local : local) -> LocalId.Map.add local.index local.local_ty m)
+        LocalId.Map.empty body.locals.locals
+    in
+    let rec place_root (p : place) : LocalId.id option =
+      match p.kind with
+      | PlaceLocal id -> Some id
+      | PlaceProjection (p, _) -> place_root p
+      | PlaceGlobal _ -> None
+    in
+    (* Does a (top-level, i.e. not nested) loop body reference a local whose type
+       carries a borrow? Only the current loop's own statements are inspected
+       (depth 0): a borrow living entirely inside a nested inner loop does not
+       cross this loop's exit. *)
+    let loop_refs_borrow (lb : block) : bool =
+      let found = ref false in
+      let visitor =
+        object
+          inherit [_] iter_statement as super
+          method! visit_Loop depth loop = super#visit_Loop (depth + 1) loop
+
+          method! visit_place depth p =
+            (if depth = 0 then
+               match place_root p with
+               | Some id -> (
+                   match LocalId.Map.find_opt id local_tys with
+                   | Some ty -> if ty_has_borrow ty then found := true
+                   | None -> ())
+               | None -> ());
+            super#visit_place depth p
+        end
+      in
+      visitor#visit_block 0 lb;
+      !found
+    in
+    let loop_exit_eq (e0 : loop_exit) (e1 : loop_exit) : bool =
+      match (e0, e1) with
+      | LoopReturn, LoopReturn -> true
+      | LoopBreak i0, LoopBreak i1 | LoopContinue i0, LoopContinue i1 -> i0 = i1
+      | _ -> false
+    in
+    let visitor =
+      object (self)
+        inherit [_] map_statement
+
+        method private rewrite_loop_body (loop : block) (after : statement list)
+            : statement list * statement list =
+          let block_exists (pred : statement -> bool) (b : block) : bool =
+            let found = ref false in
+            let visitor =
+              object
+                inherit [_] iter_statement as super
+
+                method! visit_Loop depth loop =
+                  super#visit_Loop (depth + 1) loop
+
+                method! visit_block depth b =
+                  if depth = 0 then super#visit_block depth b
+
+                method! visit_statement depth st =
+                  if depth = 0 && pred st then found := true;
+                  super#visit_statement depth st
+              end
+            in
+            visitor#visit_block 0 b;
+            !found
+          in
+          let map_current_loop_block (replace : statement -> statement list)
+              (b : block) : block =
+            let block_visitor =
+              object (self)
+                inherit [_] map_statement_base as super
+
+                method! visit_Loop depth loop =
+                  super#visit_Loop (depth + 1) loop
+
+                method! visit_block depth b =
+                  (* Only replace if the depth is 0 (it means we haven't dived
+                     into an inner loop). *)
+                  if depth = 0 then
+                    let update st = replace (self#visit_statement depth st) in
+                    {
+                      b with
+                      statements = List.flatten (List.map update b.statements);
+                    }
+                  else b
+              end
+            in
+            block_visitor#visit_block 0 b
+          in
+          let loop, post, after =
+            if block_exists (fun st -> st.kind = Return) loop then
+              let has_break =
+                block_exists
+                  (fun st ->
+                    match st.kind with
+                    | Break _ -> true
+                    | _ -> false)
+                  loop
+              in
+              if not has_break then
+                let replace st =
                   match st.kind with
-                  | Return ->
-                      (* Replace the return with a break *)
-                      [ { st with kind = Break 0 } ]
-                  | Break i ->
-                      (* Move the statements [after] before the break *)
-                      [%cassert] span (i = 0)
-                        "Breaks to outer loops are not supported yet: a \
-                         `break` here targets an enclosing loop other than the \
-                         innermost one (`break i` with i>0, i.e. a labelled \
-                         `break 'outer`). Non-local exits out of nested loops \
-                         require control-flow flattening (a synthetic \
-                         exit-reason threaded out of the loop), which Aeneas \
-                         does not implement yet.";
-                      after
+                  | Return -> [ { st with kind = Break 0 } ]
                   | _ -> [ st ]
                 in
-
-                let block_visitor =
-                  object (self)
-                    inherit [_] map_statement_base as super
-
-                    method! visit_Loop depth loop =
-                      super#visit_Loop (depth + 1) loop
-
-                    method! visit_block depth b =
-                      (* Only replace if the depth is 0 (it means we haven't dived
-                         into an inner loop) *)
-                      if depth = 0 then
-                        let update st =
-                          replace (self#visit_statement depth st)
-                        in
-                        {
-                          b with
-                          statements =
-                            List.flatten (List.map update b.statements);
-                        }
-                      else b
-                  end
+                let loop = map_current_loop_block replace loop in
+                let return = mk_statement ~span:loop.span Return in
+                (loop, [ return ], after)
+              else
+                let rec decompose_after (after : statement list) :
+                    statement list option =
+                  match after with
+                  | [] -> None
+                  | st :: after -> (
+                      match st.kind with
+                      | Return -> Some [ { st with kind = Break 0 } ]
+                      | Abort _ -> Some [ st ]
+                      | _ -> (
+                          match decompose_after after with
+                          | None -> None
+                          | Some after -> Some (st :: after)))
                 in
+                match decompose_after after with
+                | None -> (loop, [], after)
+                | Some after ->
+                    let replace st =
+                      match st.kind with
+                      | Return -> [ { st with kind = Break 0 } ]
+                      | Break 0 -> after
+                      | _ -> [ st ]
+                    in
+                    let loop = map_current_loop_block replace loop in
+                    (loop, [ mk_statement ~span:loop.span Return ], [])
+            else (loop, [], after)
+          in
+          let exits : (loop_exit * LocalId.id) list ref = ref [] in
+          let get_exit_flag (exit : loop_exit) : LocalId.id =
+            match List.find_opt (fun (e, _) -> loop_exit_eq e exit) !exits with
+            | Some (_, id) -> id
+            | None ->
+                let id = fresh_local bool_ty (Some "aeneas_loop_exit") in
+                exits := (exit, id) :: !exits;
+                id
+          in
+          let replace (st : statement) : statement list =
+            let replace_control exit =
+              let id = get_exit_flag exit in
+              [ mk_set_bool st.span id true; { st with kind = Break 0 } ]
+            in
+            match st.kind with
+            | Return -> replace_control LoopReturn
+            | Break i when i > 0 -> replace_control (LoopBreak i)
+            | Continue i when i > 0 -> replace_control (LoopContinue i)
+            | _ -> [ st ]
+          in
+          let loop = map_current_loop_block replace loop in
+          let mk_exit (exit : loop_exit) : statement =
+            let kind =
+              match exit with
+              | LoopReturn -> Return
+              | LoopBreak i ->
+                  [%sanity_check] span (i > 0);
+                  Break (i - 1)
+              | LoopContinue i ->
+                  [%sanity_check] span (i > 0);
+                  Continue (i - 1)
+            in
+            mk_statement kind
+          in
+          let mk_dispatch ((exit, id) : loop_exit * LocalId.id) : statement =
+            let then_block = { span; statements = [ mk_exit exit ] } in
+            let else_block = { span; statements = [] } in
+            mk_statement
+              (Switch (If (Copy (mk_bool_place id), then_block, else_block)))
+          in
+          let exits = List.rev !exits in
+          (* The exit-flattening above is sound only when the loop's carried
+             state is borrow-free. The symbolic interpreter joins the break
+             contexts of every exit site of a loop; if a value that carries a
+             borrow (e.g. an iterator holding [&[T]], or a [&]/[&mut] local) is
+             live across one of the synthesised non-local exits, the join must
+             reconcile a loan over a borrow-containing value across paths the
+             interpreter cannot express (this is exactly why loops are otherwise
+             restricted to innermost control flow). Naively flattening such a
+             loop makes a downstream fixed-point join fail deep in the pipeline
+             (an opaque internal error and a [sorry] body) instead of an honest
+             rejection. We only reach here when genuine non-local exits were
+             flattened ([exits <> []]); the borrow-free case (scalars, owned
+             data) — including tail-position returns handled above without
+             populating [exits] — is fully supported. *)
+          if exits <> [] && loop_refs_borrow loop then
+            [%craise] span
+              "Non-local control flow (early return, or break/continue to an \
+               outer loop) out of a loop that carries a borrow across the exit \
+               is not supported yet: the loop's break-context join cannot \
+               reconcile a loan over a borrow-containing value across the \
+               synthesised non-local exit paths.";
+          let init =
+            List.map (fun (_, id) -> mk_set_bool span id false) exits
+          in
+          let dispatch = List.map mk_dispatch exits in
+          ( init @ (mk_statement ~span:loop.span (Loop loop) :: dispatch) @ post,
+            after )
 
-                let loop = block_visitor#visit_block 0 loop in
-                let loop : statement = { st with kind = Loop loop } in
-                let loop = super#visit_statement depth loop in
-                ([ loop; return_st ], []))
-        | _ -> ([ self#visit_statement depth st ], after)
+        (* [after]: the list of statements coming *after* this one in this block.
 
-      method! visit_block depth (block : block) : block =
-        let rec update (stl : statement list) : statement list =
-          match stl with
-          | [] -> []
-          | st :: stl ->
-              let stl0, stl1 = self#update_statement depth st stl in
-              stl0 @ update stl1
-        in
-        { block with statements = update block.statements }
+           We return:
+           - the list of statements resulting from updating the current statement
+           - the list of statements to put after and that are yet to be updated
+             (the reason is that we might have moved some of those statements
+             inside the current statement).
+        *)
+        method update_statement (depth : int) (st : statement)
+            (after : statement list) : statement list * statement list =
+          match st.kind with
+          | Loop loop ->
+              let loop =
+                match self#visit_Loop (depth + 1) loop with
+                | Loop loop -> loop
+                | _ -> [%internal_error] st.span
+              in
+              self#rewrite_loop_body loop after
+          | _ -> ([ self#visit_statement depth st ], after)
 
-      method! visit_Break depth i =
-        [%cassert] span (i = 0)
-          "Breaks to outer loops are not supported yet: a `break` targets an \
-           enclosing loop other than the innermost one (`break i` with i>0, \
-           i.e. a labelled `break 'outer`). Non-local exits out of nested \
-           loops require control-flow flattening (a synthetic exit-reason \
-           threaded out of the loop), which Aeneas does not implement yet.";
-        super#visit_Break depth i
+        method! visit_block depth (block : block) : block =
+          let rec update (stl : statement list) : statement list =
+            match stl with
+            | [] -> []
+            | st :: stl ->
+                let stl0, stl1 = self#update_statement depth st stl in
+                stl0 @ update stl1
+          in
+          { block with statements = update block.statements }
+      end
+    in
 
-      method! visit_Continue depth i =
-        [%cassert] span (i = 0)
-          "Continues to outer loops are not supported yet: a `continue` \
-           targets an enclosing loop other than the innermost one (`continue \
-           i` with i>0, i.e. a labelled `continue 'outer`). Non-local control \
-           flow out of nested loops requires control-flow flattening (a \
-           synthetic exit-reason threaded out of the loop), which Aeneas does \
-           not implement yet.";
-        super#visit_Continue depth i
+    let body = initialize_storage_live body in
+    let body = { body with body = visitor#visit_block 0 body.body } in
+    let body =
+      {
+        body with
+        locals =
+          {
+            body.locals with
+            locals = body.locals.locals @ List.rev !new_locals;
+          };
+      }
+    in
+    let check_visitor =
+      object
+        inherit [_] iter_statement as super
+        method! visit_Loop depth loop = super#visit_Loop (depth + 1) loop
 
-      method! visit_statement depth st =
-        match st.kind with
-        | Return ->
-            [%cassert] span (depth <= 1)
-              "Early returns out of nested loops are not supported yet: a \
-               `return` occurs inside a loop that is itself nested at least \
-               two levels deep. Propagating an early return out through \
-               several enclosing loops requires control-flow flattening (a \
-               synthetic exit-reason threaded out of each loop), which Aeneas \
-               does not implement yet.";
-            (* If we are inside a loop we need to get rid of the return.
+        method! visit_statement depth st =
+          (match st.kind with
+          | Return when depth > 0 ->
+              [%craise] st.span
+                "Early returns inside of loops are not supported yet: a \
+                 `return` survived control-flow flattening (it could not be \
+                 rewritten into a synthetic exit-reason threaded out of the \
+                 loop). This typically happens when the loop carries state \
+                 that the exit-reason encoding cannot reconcile across paths."
+          | _ -> ());
+          super#visit_statement depth st
 
-               Note that raising an exception containing the full return
-               statement allows us to use its span when moving it after the loop. *)
-            if depth = 1 then raise (FoundStatement st) else st
-        | _ -> super#visit_statement depth st
+        method! visit_Break _ i =
+          [%cassert] span (i = 0)
+            "Breaks to outer loops are not supported yet: a `break i` with i>0 \
+             (a labelled `break 'outer`) survived control-flow flattening. \
+             Only breaks to the innermost loop (`break 0`) are expressible \
+             after flattening."
 
-      method! visit_Return _ =
-        (* The Return case should have been caught by the [visit_statement] method *)
-        [%internal_error] span
-    end
+        method! visit_Continue _ i =
+          [%cassert] span (i = 0)
+            "Continue to outer loops are not supported yet: a `continue i` \
+             with i>0 (a labelled `continue 'outer`) survived control-flow \
+             flattening. Only continues to the innermost loop (`continue 0`) \
+             are expressible after flattening."
+      end
+    in
+    check_visitor#visit_block 0 body.body;
+    body
   in
 
   (* Map  *)
   let body =
     match f.body with
-    | StructuredBody body ->
-        StructuredBody { body with body = visitor#visit_block 0 body.body }
+    | StructuredBody body -> StructuredBody (update_body body)
     | other -> other
   in
 
