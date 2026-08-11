@@ -1399,6 +1399,11 @@ let builtin_pure_functions () : (pure_builtin_fun_id * string) list =
         (ToResult, "lift");
         (ResultUnwrapMut, "core.result.Result.unwrap.mut");
         (GetTarget, "get_target");
+        (* Coercion helper emitted into the generated output (see
+           {!Translate.vec_of_list_helper_lean} and
+           {!Translate.coerce_list_to_vec_at_uses}). Its definition is NOT part
+           of the Aeneas Lean stdlib. *)
+        (VecOfList, "Aeneas.VecListNesting.vecOfList");
       ]
   | HOL4 ->
       (* We don't provide [FuelDecrease] and [FuelEqZero] on purpose *)

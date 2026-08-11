@@ -149,6 +149,18 @@ type pure_builtin_fun_id =
           bodies generate a call to [get_target] and dispatch on the result. The
           function is fallible and axiomatized; nothing can be deduced from its
           output. *)
+  | VecOfList
+      (** Checked coercion [List T -> Result (Vec T)].
+
+          Introduced (Lean only) at the consumption sites of a recursive [Vec]
+          field that {!Translate.rewrite_recursive_vec_as_list} rewrote to
+          [List T]. Such a field is consumed by functions that were translated
+          expecting a [Vec] (e.g. [for x in &field], which lowers to a
+          projection fed to [into_iter]); this coercion re-establishes the
+          [l.length <= Usize.max] bound monadically ([ok] if it holds, [fail]
+          otherwise), pushing the obligation to the proof layer exactly like
+          array indexing does. The helper definition is emitted into the
+          generated output (never into the Aeneas Lean stdlib). *)
 [@@deriving show, ord]
 
 (* Builtin declarations coming from external libraries.
