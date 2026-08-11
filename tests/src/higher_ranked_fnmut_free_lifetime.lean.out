@@ -1,6 +1,0 @@
-[[92mInfo[39m ] Imported: tests/llbc/higher_ranked_fnmut_free_lifetime.llbc
-[[91mError[39m] Unimplemented: found an occurrence of a lifetime constraint relating
-         a higher-ranked lifetime to a free lifetime.
-Source: 'tests/src/higher_ranked_fnmut_free_lifetime.rs', lines 25:0-30:1
-Compiler source: llbc/TypesAnalysis.ml, line 983
-

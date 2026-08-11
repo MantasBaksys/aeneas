@@ -1,8 +1,7 @@
 //@ [!lean] skip
-//@ [lean] known-failure
 // The `Iterator::find` pattern, minimized. A higher-ranked `FnMut` bound whose
-// closure argument nests the free lifetime of the enclosing item is rejected by
-// TypesAnalysis.check_no_bound_free_implied_bounds, exactly like
+// closure argument nests the free lifetime of the enclosing item used to be
+// rejected by TypesAnalysis.check_no_bound_free_implied_bounds, exactly like
 // `higher_ranked_implied_bounds_borrow.rs`.
 //
 // The bound `P: FnMut(&&'a T) -> bool` desugars to
@@ -15,12 +14,14 @@
 //   `<slice::Iter<'a, T> as Iterator>::find`, whose `where P: FnMut(&Self::Item)`
 // bound (with `Self::Item = &'a T`) is what makes ripgrep extraction fail.
 //
-// NOTE for a future fix: unlike the `RefTrait` known-failure tests, here the
-// higher-ranked lifetime `'x` appears ONLY in the (contravariant) argument of
-// the closure and never flows into a returned borrow — the closure returns
-// `bool`. A sound relaxation of the check would need to distinguish these two
-// cases (see REPORT-iterator-hrtb.md), which is why this remains a
-// known-failure for now rather than being silently accepted.
+// It is now ACCEPTED by the variance-aware relaxation of the check: unlike the
+// `RefTrait` known-failure tests, here the higher-ranked lifetime `'x` appears
+// ONLY in the (contravariant) argument of the closure, under a *shared*
+// reference, and never flows into a returned borrow — the closure returns
+// `bool`. It therefore cannot reach any backward function, so the (invisible)
+// bound<->free constraint is harmless. The `RefTrait` cases, where the
+// higher-ranked lifetime reaches the *output* of a trait method, remain
+// rejected.
 
 pub fn find_like<'a, T, P>(x: &'a T, mut pred: P) -> bool
 where

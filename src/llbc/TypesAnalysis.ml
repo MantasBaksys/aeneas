@@ -963,9 +963,26 @@ let compute_outlive_proj_ty (span : Meta.span option)
     - the borrows we dive into: in a borrow [&'r T], the lifetime ['r] of the
       borrow must be shorter than (i.e. is outlived by) every lifetime appearing
       in the referent [T]. We track the borrow regions we have dived into to
-      check these. *)
-let check_no_bound_free_implied_bounds (span : Meta.span option)
-    (type_decls : type_decl TypeDeclId.Map.t) (tys : ty list) : unit =
+      check these.
+
+    [relaxed] enables a variance-aware relaxation used for the argument types of
+    [Fn]/[FnMut]/[FnOnce] closure bounds (see
+    {!check_fun_decl_no_bound_free_implied_bounds}). The generic argument of a
+    closure trait is the closure's argument tuple, which appears only in a
+    *contravariant* (by-value, consumed) position of the [call*] method: it is
+    passed *into* the closure and never returned. A borrow that is read through
+    a *shared* reference therefore cannot flow into any backward function of the
+    closure (shared borrows carry no data back), so a bound<->free constraint
+    living entirely under a shared reference is invisible-and-harmless rather
+    than invisible-and-dangerous. Concretely, in [relaxed] mode, once we dive
+    through a shared reference we stop rejecting bound<->free constraints. We
+    keep rejecting when the constraint is reachable without crossing a shared
+    reference, i.e. through a *mutable* borrow (which induces a backward
+    function) or an ADT's own implied bounds at the top level — exactly the
+    cases where the higher-ranked region could reach a backward function. *)
+let check_no_bound_free_implied_bounds ?(relaxed : bool = false)
+    (span : Meta.span option) (type_decls : type_decl TypeDeclId.Map.t)
+    (tys : ty list) : unit =
   let is_bound (r : region) =
     match r with
     | RVar (Bound _) -> true
@@ -999,73 +1016,111 @@ let check_no_bound_free_implied_bounds (span : Meta.span option)
     object (self)
       inherit [_] iter_ty as super
 
-      (* [outer] is the list of borrow regions we have dived into: the referent
-         of a borrow must outlive the borrow, so every region we encounter must
-         outlive each of the [outer] borrow regions. *)
-      method! visit_region (outer : region list) (r : region) =
-        List.iter (fun o -> check_pair r o) outer
+      (* The state is [(outer, benign)]:
+         - [outer] is the list of borrow regions we have dived into: the
+           referent of a borrow must outlive the borrow, so every region we
+           encounter must outlive each of the [outer] borrow regions.
+         - [benign] is [true] once we are (in [relaxed] mode) under a shared
+           reference: a bound<->free constraint discovered there cannot corrupt
+           a backward function, so we stop rejecting. Outside [relaxed] mode
+           [benign] stays [false] and the behaviour is unchanged. *)
+      method! visit_region ((outer, benign) : region list * bool) (r : region) =
+        if not benign then List.iter (fun o -> check_pair r o) outer
 
-      method! visit_ty (outer : region list) (ty : ty) =
+      method! visit_ty ((outer, benign) : region list * bool) (ty : ty) =
         match ty with
-        | TRef (r, ref_ty, _) ->
+        | TRef (r, ref_ty, rkind) ->
             (* [r] itself must outlive the outer borrow regions. *)
-            self#visit_region outer r;
+            self#visit_region (outer, benign) r;
+            (* Diving through a shared reference makes the referent read-only:
+               in [relaxed] (closure-argument) mode this means any bound<->free
+               constraint below can no longer reach a backward function. *)
+            let benign =
+              benign || (relaxed && match rkind with RShared -> true | RMut -> false)
+            in
             (* The regions of [ref_ty] must outlive [r] (the borrow's lifetime
                is shorter than the lifetimes appearing in the referent), as well
                as the outer borrow regions: we record [r] and dive in. *)
-            self#visit_ty (r :: outer) ref_ty
+            self#visit_ty (r :: outer, benign) ref_ty
         | TAdt { id; generics = adt_generics } ->
             (* The implied bounds coming from the ADT's own declaration
                (constraints between its lifetime/type parameters). *)
-            (match id with
-            | TAdtId id -> (
-                match TypeDeclId.Map.find_opt id type_decls with
-                | None -> ()
-                | Some decl ->
-                    let subst =
-                      Charon.Substitute.make_subst_from_generics decl.generics
-                        adt_generics Self
-                    in
-                    let preds =
-                      Charon.Substitute.predicates_substitute subst
-                        decl.generics
-                    in
-                    (* [r0] outlives [r1] *)
-                    List.iter
-                      (fun (p : (region, region) outlives_pred region_binder) ->
-                        let r0, r1 = p.binder_value in
-                        check_pair r0 r1)
-                      preds.regions_outlive;
-                    (* [ty] outlives [r]: every region of [ty] outlives [r] *)
-                    List.iter
-                      (fun (p : (ty, region) outlives_pred region_binder) ->
-                        let ty, r = p.binder_value in
-                        List.iter (fun rt -> check_pair rt r) (regions_of_ty ty))
-                      preds.types_outlive)
-            | _ -> ());
+            (if not benign then
+               match id with
+               | TAdtId id -> (
+                   match TypeDeclId.Map.find_opt id type_decls with
+                   | None -> ()
+                   | Some decl ->
+                       let subst =
+                         Charon.Substitute.make_subst_from_generics decl.generics
+                           adt_generics Self
+                       in
+                       let preds =
+                         Charon.Substitute.predicates_substitute subst
+                           decl.generics
+                       in
+                       (* [r0] outlives [r1] *)
+                       List.iter
+                         (fun (p :
+                                (region, region) outlives_pred region_binder) ->
+                           let r0, r1 = p.binder_value in
+                           check_pair r0 r1)
+                         preds.regions_outlive;
+                       (* [ty] outlives [r]: every region of [ty] outlives [r] *)
+                       List.iter
+                         (fun (p : (ty, region) outlives_pred region_binder) ->
+                           let ty, r = p.binder_value in
+                           List.iter
+                             (fun rt -> check_pair rt r)
+                             (regions_of_ty ty))
+                         preds.types_outlive)
+               | _ -> ());
             (* Dive into the generic arguments. The region arguments are checked
                against [outer] by [visit_region], the type arguments are
                recursed into. *)
-            super#visit_ty outer ty
-        | _ -> super#visit_ty outer ty
+            super#visit_ty (outer, benign) ty
+        | _ -> super#visit_ty (outer, benign) ty
     end
   in
-  List.iter (visitor#visit_ty []) tys
+  List.iter (visitor#visit_ty ([], false)) tys
 
 (** Check that a function signature does not introduce an implied bound relating
     a locally-bound (higher-ranked) region to a free region (see
     {!check_no_bound_free_implied_bounds}). We look at the input/output types as
     well as the types appearing in the (possibly higher-ranked) trait clauses.
-*)
+
+    For a trait clause whose trait is a builtin [Fn]/[FnMut]/[FnOnce] closure
+    trait, the generic argument is the closure's argument tuple: it appears only
+    in a contravariant (by-value, consumed) position of the [call*] method and
+    is never returned. We therefore check those argument types in [relaxed]
+    mode, which tolerates a bound<->free constraint that is only reachable
+    through a shared reference (and hence can never flow into a backward
+    function), while still rejecting the dangerous cases where the higher-ranked
+    region reaches a mutable borrow. See {!check_no_bound_free_implied_bounds}.
+    All non-closure trait clauses, as well as the input/output types, are still
+    checked strictly. *)
 let check_fun_decl_no_bound_free_implied_bounds
+    (trait_decls : trait_decl TraitDeclId.Map.t)
     (type_decls : type_decl TypeDeclId.Map.t) (f : fun_decl) : unit =
   let span = Some f.item_meta.span in
   let ({ inputs; output; _ } : fun_sig) = f.signature in
-  (* The types mentioned in the (possibly higher-ranked) trait clauses. *)
-  let clause_tys =
-    List.concat_map
-      (fun (c : trait_param) -> c.trait.binder_value.generics.types)
-      f.generics.trait_clauses
+  (* Recognize the builtin [Fn]/[FnMut]/[FnOnce] closure traits structurally,
+     via the [lang_item] recorded by Charon on their declaration. *)
+  let is_closure_trait (id : trait_decl_id) : bool =
+    match TraitDeclId.Map.find_opt id trait_decls with
+    | Some decl -> (
+        match decl.item_meta.lang_item with
+        | Some ("fn" | "fn_mut" | "fn_once") -> true
+        | _ -> false)
+    | None -> false
   in
-  check_no_bound_free_implied_bounds span type_decls
-    ((output :: inputs) @ clause_tys)
+  (* Input/output types: strict check. *)
+  check_no_bound_free_implied_bounds span type_decls (output :: inputs);
+  (* Trait-clause types: strict, except for the argument tuples of closure
+     bounds, which we check in the variance-aware [relaxed] mode. *)
+  List.iter
+    (fun (c : trait_param) ->
+      let tys = c.trait.binder_value.generics.types in
+      let relaxed = is_closure_trait c.trait.binder_value.id in
+      check_no_bound_free_implied_bounds ~relaxed span type_decls tys)
+    f.generics.trait_clauses
