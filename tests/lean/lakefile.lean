@@ -83,6 +83,7 @@ package «tests» {}
 @[default_target] lean_lib LoopsRec
 @[default_target] lean_lib LoopsSequences
 @[default_target] lean_lib MiniTree
+@[default_target] lean_lib MixedGroupRecursion
 @[default_target] lean_lib MultiTarget
 @[default_target] lean_lib MutBorrowInSharedBorrow
 @[default_target] lean_lib Names
