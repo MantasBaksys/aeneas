@@ -49,6 +49,111 @@ let analyze_type_declarations (crate : crate)
         infos)
     TypeDeclId.Map.empty decls
 
+(** Compute the set of trait-impl ids which are the [Fn]/[FnMut]/[FnOnce]
+    implementations of a closure. We recognize them structurally (never by name):
+    a closure's state type declaration has a [ClosureItem] source, which records
+    the ids of its [Fn*] impls. *)
+let compute_closure_fn_impl_ids (crate : crate) : TraitImplId.Set.t =
+  TypeDeclId.Map.fold
+    (fun _ (d : type_decl) acc ->
+      match d.src with
+      | ClosureItem info ->
+          let add_opt acc = function
+            | None -> acc
+            | Some (rb : trait_impl_ref region_binder) ->
+                TraitImplId.Set.add rb.binder_value.id acc
+          in
+          let acc = TraitImplId.Set.add info.fn_once_impl.binder_value.id acc in
+          let acc = add_opt acc info.fn_mut_impl in
+          add_opt acc info.fn_impl
+      | _ -> acc)
+    crate.type_decls TraitImplId.Set.empty
+
+(** A mixed group is a "closure recursion" group when it mixes only function
+    declarations with closure [Fn*] trait impls (no types, no user trait impls):
+    i.e. a function that is mutually recursive with one of its own closures
+    because the closure calls back into it (e.g. via [.map(|e| f(e))]).
+
+    This is the shape produced by any recursive AST traversal written with a
+    closure. It is structurally distinguished (never keyed on names) from the
+    genuinely-unsupported general mixed group (a user type or user trait impl
+    mutually recursive with a function). *)
+let mixed_group_is_closure_recursion (closure_fn_impl_ids : TraitImplId.Set.t)
+    (ids : item_id list) : bool =
+  let has_fun =
+    List.exists (function IdFun _ -> true | _ -> false) ids
+  in
+  let has_closure_impl = ref false in
+  let ok =
+    List.for_all
+      (function
+        | IdFun _ -> true
+        | IdTraitImpl iid when TraitImplId.Set.mem iid closure_fn_impl_ids ->
+            has_closure_impl := true;
+            true
+        | _ -> false)
+      ids
+  in
+  has_fun && !has_closure_impl && ok
+
+(** Rewrite the crate's declaration groups so that closure-recursion mixed groups
+    (see {!mixed_group_is_closure_recursion}) are turned into a recursive function
+    group (the function together with the closures' [call]/[call_mut]/[call_once]
+    bodies) followed by the closures' trait-impl instances as individual
+    non-recursive groups.
+
+    The function members form a single mutually-recursive group extracted as a
+    [mutual ... end] block (of [partial_fixpoint] defs in Lean); the closures'
+    trait-instance record values are emitted *after* the block as plain [def]s.
+    This is the only shape Lean accepts for this pattern: the record instances
+    cannot live inside a [partial_fixpoint] mutual block nor be forward-referenced
+    from it, so the recursive functions must not reference them - the extraction
+    inlines the closures' trait dictionaries at the recursive use sites inside the
+    group (see [ExtractExpressions.extract_trait_ref] / the closure-recursion
+    handling).
+
+    Genuinely-unsupported mixed groups (types or user trait impls recursive with
+    functions) are left untouched and continue to be reported as errors. *)
+let split_closure_recursion_mixed_groups (crate : crate) :
+    crate * TraitImplId.Set.t =
+  let closure_fn_impl_ids = compute_closure_fn_impl_ids crate in
+  let inline_impls = ref TraitImplId.Set.empty in
+  let rewrite_group (dg : declaration_group) : declaration_group list =
+    match dg with
+    | MixedGroup g ->
+        let ids = g_declaration_group_to_list g in
+        if mixed_group_is_closure_recursion closure_fn_impl_ids ids then (
+          let fun_ids =
+            List.filter_map (function IdFun id -> Some id | _ -> None) ids
+          in
+          let impl_ids =
+            List.filter_map
+              (function IdTraitImpl id -> Some id | _ -> None)
+              ids
+          in
+          (* Record the closure [Fn*] impls of this group: references to them from
+             inside the recursive function block must be inlined (see
+             [ExtractBase.closure_recursion_inline_impls]). *)
+          List.iter
+            (fun id -> inline_impls := TraitImplId.Set.add id !inline_impls)
+            impl_ids;
+          (* The function members are all mutually recursive: emit them as one
+             recursive function group. Even if [fun_ids] is a singleton, it is
+             self-recursive (through its closures), so [RecGroup] is correct. *)
+          let fun_group = FunGroup (RecGroup fun_ids) in
+          (* Emit the closures' trait instances *after* the function block, each
+             as its own non-recursive group. They depend on the block's functions
+             but are not referenced from inside it (dictionaries are inlined). *)
+          let impl_groups =
+            List.map (fun id -> TraitImplGroup (NonRecGroup id)) impl_ids
+          in
+          fun_group :: impl_groups)
+        else [ dg ]
+    | _ -> [ dg ]
+  in
+  let declarations = List.concat_map rewrite_group crate.declarations in
+  ({ crate with declarations }, !inline_impls)
+
 let compute_contexts (crate : crate) : decls_ctx =
   let crate_graph = Deps.compute_graph_of_uses crate in
   let type_decls_list, _, _, _, _, _ = split_declarations crate.declarations in

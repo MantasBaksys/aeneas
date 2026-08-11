@@ -620,6 +620,19 @@ and extract_trait_instance_id (span : Meta.span) (ctx : extraction_ctx)
           F.pp_print_string fmt "/- Unexpected occurrence of Self -/"
       | _ -> F.pp_print_string fmt "ERROR(\"Unexpected Self\")")
   | TraitImpl (id, generics) ->
+      (* If this impl is a closure [Fn*] impl that belongs to a closure-recursion
+         group, inline its dictionary instead of referring to it by name: the
+         named instance is emitted *after* the [mutual] block and referring to it
+         from inside the block would be a forward reference Lean rejects. *)
+      if
+        backend () = Lean
+        && TraitImplId.Set.mem id !closure_recursion_inline_impls
+        &&
+        match !extract_trait_impl_inline_hook with
+        | Some hook -> hook ctx fmt span id generics
+        | None -> false
+      then ()
+      else
       let name = ctx_get_trait_impl span id ctx in
       (* Lookup the the information about the explicit/implicit parameters. *)
       let explicit =

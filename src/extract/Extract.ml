@@ -3451,6 +3451,141 @@ let extract_trait_impl_method_items (ctx : extraction_ctx) (fmt : F.formatter)
     extract_admit fmt
 
 (** Extract a trait implementation *)
+(** Extract the record fields of a trait implementation (constants, associated
+    types, parent clauses and methods), i.e. the [{ ... }] body. Factored out of
+    {!extract_trait_impl} so it can be reused to inline a trait dictionary at a
+    use site (see {!extract_trait_impl_inline}). The caller is responsible for
+    printing the surrounding [{] / [}] and setting up the boxes. *)
+let extract_trait_impl_fields (ctx : extraction_ctx) (fmt : F.formatter)
+    (span : Meta.span) (impl : trait_impl) : unit =
+  let trait_decl_id = impl.impl_trait.trait_decl_id in
+  let trait_decl = TraitDeclId.Map.find trait_decl_id ctx.crate.trait_decls in
+
+  (* The constants *)
+  List.iter
+    (fun (const_id, _, gref) ->
+      let item_name = ctx_get_trait_const span trait_decl_id const_id ctx in
+      (* Lookup the information about the explicit/implicit parameters *)
+      let explicit =
+        match GlobalDeclId.Map.find_opt gref.global_id ctx.trans_globals with
+        | None ->
+            (* The declaration might be missing if there was an error *) None
+        | Some d -> Some d.explicit_info
+      in
+      let print_params () =
+        extract_generic_args span ctx fmt TypeDeclId.Set.empty ~explicit
+          gref.global_generics
+      in
+      let global_decl =
+        [%unwrap_with_span] span
+          (GlobalDeclId.Map.find_opt gref.global_id ctx.trans_globals)
+          "Internal error"
+      in
+      let needs_brackets =
+        (not global_decl.can_fail)
+        &&
+        match explicit with
+        | Some explicit ->
+            PureUtils.explicit_info_has_explicit explicit
+            || gref.global_generics.trait_refs <> []
+        | None -> gref.global_generics <> empty_generic_args
+      in
+      let ty () =
+        F.pp_print_space fmt ();
+        if not global_decl.can_fail then (
+          let ok =
+            match backend () with
+            | Lean -> "ok"
+            | _ -> "Ok"
+          in
+          F.pp_print_string fmt ok;
+          F.pp_print_space fmt ());
+        if needs_brackets then F.pp_print_string fmt "(";
+        F.pp_print_string fmt (ctx_get_global span gref.global_id ctx);
+        print_params ();
+        if needs_brackets then F.pp_print_string fmt ")"
+      in
+
+      extract_trait_impl_item ctx fmt item_name ty)
+    impl.consts;
+
+  (* The types *)
+  List.iter
+    (fun (type_id, _, ty) ->
+      (* Extract the type *)
+      let item_name = ctx_get_trait_type span trait_decl_id type_id ctx in
+      let ty () =
+        F.pp_print_space fmt ();
+        extract_ty span ctx fmt TypeDeclId.Set.empty ~inside:false ty
+      in
+      extract_trait_impl_item ctx fmt item_name ty)
+    impl.types;
+
+  (* The parent clauses *)
+  List.iter
+    (fun (clause, trait_ref) ->
+      let item_name =
+        ctx_get_trait_parent_clause span trait_decl_id clause.T.clause_id ctx
+      in
+      let ty () =
+        F.pp_print_space fmt ();
+        extract_trait_ref span ctx fmt TypeDeclId.Set.empty ~inside:false
+          trait_ref
+      in
+      extract_trait_impl_item ctx fmt item_name ty)
+    (List.combine trait_decl.implied_clauses impl.parent_trait_refs);
+
+  (* The methods *)
+  List.iter
+    (fun (method_id, _name, bound_fn) ->
+      extract_trait_impl_method_items ctx fmt impl method_id bound_fn)
+    impl.methods
+
+(** Inline a closure trait-impl dictionary at a use site: print
+    [({ ...fields... } : TraitDecl ...)] instead of the impl's name. Used to break
+    the forward reference to the record instance that would otherwise be emitted
+    after a [mutual] block (see {!closure_recursion_inline_impls}).
+
+    Returns [true] if it inlined, [false] (printing nothing) if it declined - in
+    which case the caller falls back to the by-name reference. We only inline when
+    the impl has no Lean-relevant generic parameters (types / const generics /
+    trait clauses), since substituting the use-site generic args into the record
+    body is not implemented yet; regions are erased so they are ignored. *)
+let extract_trait_impl_inline (ctx : extraction_ctx) (fmt : F.formatter)
+    (span : Meta.span) (impl_id : trait_impl_id) (_generics : generic_args) :
+    bool =
+  match TraitImplId.Map.find_opt impl_id ctx.trans_trait_impls with
+  | None -> false
+  | Some impl ->
+      let g = impl.generics in
+      if g.types <> [] || g.const_generics <> [] || g.trait_clauses <> [] then (
+        [%warn] span
+          "Cannot yet inline a closure trait dictionary that has generic \
+           parameters; the reference to the closure's Fn* instance will be \
+           emitted by name and will not type-check inside the recursive block.";
+        false)
+      else (
+        (* [({ <fields> } : <trait decl ref>)] *)
+        F.pp_open_hvbox fmt 0;
+        F.pp_print_string fmt "(";
+        F.pp_open_vbox fmt ctx.indent_incr;
+        F.pp_print_string fmt "{";
+        extract_trait_impl_fields ctx fmt span impl;
+        F.pp_close_box fmt ();
+        F.pp_print_space fmt ();
+        F.pp_print_string fmt "}";
+        F.pp_print_space fmt ();
+        F.pp_print_string fmt ":";
+        F.pp_print_space fmt ();
+        extract_trait_decl_ref span ctx fmt TypeDeclId.Set.empty ~inside:false
+          impl.impl_trait;
+        F.pp_print_string fmt ")";
+        F.pp_close_box fmt ();
+        true)
+
+let () =
+  extract_trait_impl_inline_hook := Some extract_trait_impl_inline
+
 let extract_trait_impl (ctx : extraction_ctx) (fmt : F.formatter)
     ~(is_rec : bool) (impl : trait_impl) : unit =
   [%ltrace name_to_string ctx impl.item_meta.name];
@@ -3601,91 +3736,7 @@ let extract_trait_impl (ctx : extraction_ctx) (fmt : F.formatter)
     (* Close the box for the name + generics *)
     F.pp_close_box fmt ();
 
-    (*
-     * Extract the items
-     *)
-    let trait_decl_id = impl.impl_trait.trait_decl_id in
-    let trait_decl = TraitDeclId.Map.find trait_decl_id ctx.crate.trait_decls in
-
-    (* The constants *)
-    List.iter
-      (fun (const_id, _, gref) ->
-        let item_name = ctx_get_trait_const span trait_decl_id const_id ctx in
-        (* Lookup the information about the explicit/implicit parameters *)
-        let explicit =
-          match GlobalDeclId.Map.find_opt gref.global_id ctx.trans_globals with
-          | None ->
-              (* The declaration might be missing if there was an error *) None
-          | Some d -> Some d.explicit_info
-        in
-        let print_params () =
-          extract_generic_args span ctx fmt TypeDeclId.Set.empty ~explicit
-            gref.global_generics
-        in
-        let global_decl =
-          [%unwrap_with_span] span
-            (GlobalDeclId.Map.find_opt gref.global_id ctx.trans_globals)
-            "Internal error"
-        in
-        let needs_brackets =
-          (not global_decl.can_fail)
-          &&
-          match explicit with
-          | Some explicit ->
-              PureUtils.explicit_info_has_explicit explicit
-              || gref.global_generics.trait_refs <> []
-          | None -> gref.global_generics <> empty_generic_args
-        in
-        let ty () =
-          F.pp_print_space fmt ();
-          if not global_decl.can_fail then (
-            let ok =
-              match backend () with
-              | Lean -> "ok"
-              | _ -> "Ok"
-            in
-            F.pp_print_string fmt ok;
-            F.pp_print_space fmt ());
-          if needs_brackets then F.pp_print_string fmt "(";
-          F.pp_print_string fmt (ctx_get_global span gref.global_id ctx);
-          print_params ();
-          if needs_brackets then F.pp_print_string fmt ")"
-        in
-
-        extract_trait_impl_item ctx fmt item_name ty)
-      impl.consts;
-
-    (* The types *)
-    List.iter
-      (fun (type_id, _, ty) ->
-        (* Extract the type *)
-        let item_name = ctx_get_trait_type span trait_decl_id type_id ctx in
-        let ty () =
-          F.pp_print_space fmt ();
-          extract_ty span ctx fmt TypeDeclId.Set.empty ~inside:false ty
-        in
-        extract_trait_impl_item ctx fmt item_name ty)
-      impl.types;
-
-    (* The parent clauses *)
-    List.iter
-      (fun (clause, trait_ref) ->
-        let item_name =
-          ctx_get_trait_parent_clause span trait_decl_id clause.T.clause_id ctx
-        in
-        let ty () =
-          F.pp_print_space fmt ();
-          extract_trait_ref span ctx fmt TypeDeclId.Set.empty ~inside:false
-            trait_ref
-        in
-        extract_trait_impl_item ctx fmt item_name ty)
-      (List.combine trait_decl.implied_clauses impl.parent_trait_refs);
-
-    (* The methods *)
-    List.iter
-      (fun (method_id, _name, bound_fn) ->
-        extract_trait_impl_method_items ctx fmt impl method_id bound_fn)
-      impl.methods;
+    extract_trait_impl_fields ctx fmt span impl;
 
     (* Close the outer boxes for the definition, as well as the brackets *)
     F.pp_close_box fmt ();

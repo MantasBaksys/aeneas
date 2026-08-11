@@ -22,15 +22,34 @@ module FunIdSet = Collections.MakeSet (FunIdOrderedType)
 
 (** Compute the dependencies of a function body, taking only into account the
     *custom* (i.e., not builtin) functions ids (ignoring operations, types,
-    globals, etc.). *)
-let compute_body_fun_deps (e : texpr) : FunIdSet.t =
+    globals, etc.).
+
+    [extra_deps] lets the caller add dependencies for trait-impl references: when
+    a closure's [Fn*] dictionary is inlined at a use site (see
+    [ExtractBase.closure_recursion_inline_impls]), the enclosing function
+    genuinely depends on the closure's [call]/[call_mut]/[call_once] functions,
+    even though the pure body only mentions the impl. Surfacing that dependency
+    here is what lets the SCC computation put the function and its closures'
+    methods in the same [mutual] block. *)
+let compute_body_fun_deps ?(extra_deps : trait_impl_id -> FunIdSet.t = fun _ ->
+    FunIdSet.empty) (e : texpr) : FunIdSet.t =
   let ids = ref FunIdSet.empty in
 
   let visitor =
-    object
+    object (self)
       inherit [_] iter_expr
 
-      method! visit_qualif _ id =
+      method! visit_trait_instance_id _ id =
+        match id with
+        | TraitImpl (impl_id, _) ->
+            ids := FunIdSet.union !ids (extra_deps impl_id)
+        | _ -> ()
+
+      method! visit_qualif env id =
+        (* Recurse into the generics so that trait instances (e.g. the
+           dictionaries of closures whose [Fn*] impls are inlined) get visited
+           and contribute their dependencies via [extra_deps]. *)
+        self#visit_generic_args env id.generics;
         match id.id with
         | FunOrOp (Unop _ | Binop _)
         | Global _
@@ -66,7 +85,8 @@ type function_group = {
 (** Group mutually recursive functions together and reorder the groups so that
     if a group B depends on a group A then A comes before B, while trying to
     respect the original order as much as possible. *)
-let group_reorder_fun_decls (decls : fun_decl list) :
+let group_reorder_fun_decls ?(extra_deps : trait_impl_id -> FunIdSet.t =
+    fun _ -> FunIdSet.empty) (decls : fun_decl list) :
     (bool * fun_decl list) list =
   let module IntMap = MakeMap (OrderedInt) in
   let get_fun_id (decl : fun_decl) : fun_id =
@@ -90,7 +110,7 @@ let group_reorder_fun_decls (decls : fun_decl list) :
         match decl.body with
         | None -> (id, FunIdSet.empty)
         | Some body ->
-            let deps = compute_body_fun_deps body.body in
+            let deps = compute_body_fun_deps ~extra_deps body.body in
             (* Restrict the set dependencies *)
             let deps = FunIdSet.inter deps ids in
             (id, deps))

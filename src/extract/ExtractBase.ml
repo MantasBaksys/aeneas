@@ -628,6 +628,39 @@ type extraction_ctx = {
 let extraction_ctx_to_fmt_env (ctx : extraction_ctx) : PrintPure.fmt_env =
   TranslateCore.trans_ctx_to_pure_fmt_env ctx.trans_ctx
 
+(** The set of closure [Fn]/[FnMut]/[FnOnce] trait-impl ids that belong to a
+    closure-recursion mixed group (a function mutually recursive with its own
+    closures - see [Interp.split_closure_recursion_mixed_groups]).
+
+    A reference to one of these instances made *inside* the recursive group would
+    be a forward reference to a record value that is emitted *after* the [mutual]
+    block, which Lean rejects. To avoid it, references to these instances are
+    extracted by inlining the closure's trait dictionary (a record literal that
+    refers directly to the sibling [call]/[call_mut]/[call_once] functions),
+    instead of by name. This set is populated once per crate. *)
+let closure_recursion_inline_impls : TraitImplId.Set.t ref =
+  ref TraitImplId.Set.empty
+
+(** Hook used to inline a closure trait-impl dictionary at a use site (set by
+    [Extract.ml] to break the module-dependency cycle between [ExtractTypes] -
+    which extracts trait references - and [Extract], which extracts trait impls).
+
+    Given the trait-impl id and the use-site generic args, it prints an inline
+    record literal for the impl and returns [true]; it returns [false] (printing
+    nothing) if it declines to inline (e.g. the impl has non-erased generic
+    parameters we cannot yet substitute), in which case the caller falls back to
+    the by-name reference. *)
+let extract_trait_impl_inline_hook :
+    (extraction_ctx ->
+    F.formatter ->
+    Meta.span ->
+    trait_impl_id ->
+    generic_args ->
+    bool)
+    option
+    ref =
+  ref None
+
 let extraction_ctx_to_llbc_fmt_env (ctx : extraction_ctx) : Print.fmt_env =
   TranslateCore.trans_ctx_to_fmt_env ctx.trans_ctx
 

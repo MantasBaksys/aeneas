@@ -955,8 +955,52 @@ let export_fun_decls_decreases_templates (fmt : Format.formatter)
 let export_fun_decls_scc (fmt : Format.formatter) (config : gen_config)
     (ctx : gen_ctx) (decls : Pure.fun_decl list) : unit =
   if config.extract_fun_decls then
+    (* For closure-recursion groups, references to a closure's [Fn*] instance are
+       inlined at extraction time as a record literal referring directly to the
+       closure's [call]/[call_mut]/[call_once] functions. So the enclosing
+       function genuinely depends on those functions - surface that dependency to
+       the SCC computation so they end up in the same [mutual] block (and in a
+       valid order). See [ExtractBase.closure_recursion_inline_impls]. *)
+    let extra_deps (impl_id : Pure.trait_impl_id) : ReorderDecls.FunIdSet.t =
+      if
+        not (TraitImplId.Set.mem impl_id !ExtractBase.closure_recursion_inline_impls)
+      then ReorderDecls.FunIdSet.empty
+      else
+        let rec collect (impl_id : Pure.trait_impl_id)
+            (visited : TraitImplId.Set.t) : ReorderDecls.FunIdSet.t =
+          if TraitImplId.Set.mem impl_id visited then ReorderDecls.FunIdSet.empty
+          else
+            match TraitImplId.Map.find_opt impl_id ctx.trans_trait_impls with
+            | None -> ReorderDecls.FunIdSet.empty
+            | Some impl ->
+                let visited = TraitImplId.Set.add impl_id visited in
+                let from_methods =
+                  List.fold_left
+                    (fun acc (_, _, (bound_fn : Pure.fun_decl_ref Pure.binder)) ->
+                      ReorderDecls.FunIdSet.add
+                        {
+                          ReorderDecls.def_id = bound_fn.binder_value.fun_id;
+                          lp_id = None;
+                        }
+                        acc)
+                    ReorderDecls.FunIdSet.empty impl.methods
+                in
+                List.fold_left
+                  (fun acc (tr : Pure.trait_ref) ->
+                    match tr.trait_id with
+                    | Pure.TraitImpl (pid, _)
+                      when TraitImplId.Set.mem pid
+                             !ExtractBase.closure_recursion_inline_impls ->
+                        ReorderDecls.FunIdSet.union acc (collect pid visited)
+                    | _ -> acc)
+                  from_methods impl.parent_trait_refs
+        in
+        collect impl_id TraitImplId.Set.empty
+    in
     (* Group the mutually recursive definitions *)
-    let subgroups = ReorderDecls.group_reorder_fun_decls decls in
+    let subgroups =
+      ReorderDecls.group_reorder_fun_decls ~extra_deps decls
+    in
     (* Extract the subgroups *)
     List.iter
       (fun (is_rec, decls) ->
@@ -2213,6 +2257,20 @@ let translate_crate (filename : string) (dest_dir : string)
   [%ltrace
     "- filename: " ^ filename ^ "\n- dest_dir: " ^ dest_dir ^ "\n- subdir: "
     ^ Print.option_to_string (fun x -> x) subdir];
+
+  (* Rewrite closure-recursion mixed groups (a function mutually recursive with
+     its own closures' [Fn*] impls, e.g. any recursive AST traversal written with
+     [.map(|e| f(e))]) into a recursive function group followed by the closures'
+     trait instances. This lets the whole SCC be extracted as a [mutual] block of
+     functions with the record instances emitted afterwards, instead of being
+     rejected as an unsupported mixed group. *)
+  let crate, closure_recursion_inline_impls =
+    Interp.split_closure_recursion_mixed_groups crate
+  in
+  (* Publish the closure [Fn*] impls whose references must be inlined at their use
+     sites inside the recursive function block (see [ExtractBase] and
+     [ExtractTypes.extract_trait_instance_id]). *)
+  ExtractBase.closure_recursion_inline_impls := closure_recursion_inline_impls;
 
   (* Translate the module to the pure AST *)
   let trans_ctx, trans_crate = translate_crate_to_pure crate marked_ids in
