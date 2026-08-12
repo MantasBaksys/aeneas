@@ -570,6 +570,73 @@ def FromI128I128 : core.convert.From I128 I128 := {
   «from» := fun x => ok (num.FromI128I128.from x)
 }
 
+/-! ## `From<bool>`
+
+The conversion functions (`num.From«%S»Bool.from`) were already defined above,
+but the instance records they belong to were missing, so `impl From<bool> for
+uN` extracted to a reference to an identifier that did not exist. Any crate
+converting a `bool` to an integer — a common branch-free idiom — hit this. -/
+
+@[reducible]
+def FromUsizeBool : core.convert.From Usize Bool := {
+  «from» := fun x => ok (num.FromUsizeBool.from x)
+}
+
+@[reducible]
+def FromU8Bool : core.convert.From U8 Bool := {
+  «from» := fun x => ok (num.FromU8Bool.from x)
+}
+
+@[reducible]
+def FromU16Bool : core.convert.From U16 Bool := {
+  «from» := fun x => ok (num.FromU16Bool.from x)
+}
+
+@[reducible]
+def FromU32Bool : core.convert.From U32 Bool := {
+  «from» := fun x => ok (num.FromU32Bool.from x)
+}
+
+@[reducible]
+def FromU64Bool : core.convert.From U64 Bool := {
+  «from» := fun x => ok (num.FromU64Bool.from x)
+}
+
+@[reducible]
+def FromU128Bool : core.convert.From U128 Bool := {
+  «from» := fun x => ok (num.FromU128Bool.from x)
+}
+
+@[reducible]
+def FromIsizeBool : core.convert.From Isize Bool := {
+  «from» := fun x => ok (num.FromIsizeBool.from x)
+}
+
+@[reducible]
+def FromI8Bool : core.convert.From I8 Bool := {
+  «from» := fun x => ok (num.FromI8Bool.from x)
+}
+
+@[reducible]
+def FromI16Bool : core.convert.From I16 Bool := {
+  «from» := fun x => ok (num.FromI16Bool.from x)
+}
+
+@[reducible]
+def FromI32Bool : core.convert.From I32 Bool := {
+  «from» := fun x => ok (num.FromI32Bool.from x)
+}
+
+@[reducible]
+def FromI64Bool : core.convert.From I64 Bool := {
+  «from» := fun x => ok (num.FromI64Bool.from x)
+}
+
+@[reducible]
+def FromI128Bool : core.convert.From I128 Bool := {
+  «from» := fun x => ok (num.FromI128Bool.from x)
+}
+
 end core.convert
 
 open ScalarElab
