@@ -154,6 +154,12 @@ let () =
         Arg.Set print_unknown_externals,
         " Print all the external definitions which are not listed in the \
          builtin functions" );
+      ( "-assume-empty-asm-is-identity",
+        Arg.Set assume_empty_asm_is_identity,
+        " Assume inline assembly statements whose template contains only \
+         whitespace and C-style block comments are semantic no-ops. This is \
+         unsafe in general because Charon currently drops asm operands, \
+         clobbers and options." );
       ( "-log",
         Arg.String (add_activated_loggers EL.Trace),
         " Activate trace log for a given logger designated by its name. It is \

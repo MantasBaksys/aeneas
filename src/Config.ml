@@ -90,6 +90,13 @@ let print_error_emitters = ref false
     functions *)
 let print_unknown_externals = ref false
 
+(** Assume inline assembly statements whose template contains only whitespace
+    and C-style block comments are semantic no-ops.
+
+    This is intentionally opt-in: Charon currently preserves only the assembly
+    template string, not operand directions, clobbers or options. *)
+let assume_empty_asm_is_identity = ref false
+
 (** {1 Interpreter} *)
 
 (** Activate the sanity checks, and in particular the invariant checks that are

@@ -34,6 +34,115 @@ let generic_params_to_string (crate : crate) (generics : generic_params) =
   let generics, traits = Print.generic_params_to_strings fmt_env generics in
   "<" ^ String.concat ", " (generics @ traits) ^ ">"
 
+(** Return [true] if an inline assembly template contains no assembly tokens
+    after deleting whitespace and C-style block comments.
+
+    We intentionally do not treat line-comment syntaxes such as [//], [#] or
+    [;] as comments: their meaning is target/assembler-syntax dependent, while
+    the zmij optimizer barriers use [/* ... */] templates. *)
+let inline_asm_template_is_empty (asm : string) : bool =
+  let len = String.length asm in
+  let is_whitespace = function
+    | ' ' | '\t' | '\n' | '\r' | '\012' -> true
+    | _ -> false
+  in
+  let rec find_block_comment_end i =
+    if i + 1 >= len then None
+    else if asm.[i] = '*' && asm.[i + 1] = '/' then Some (i + 2)
+    else find_block_comment_end (i + 1)
+  in
+  let rec strip i =
+    if i >= len then true
+    else if is_whitespace asm.[i] then strip (i + 1)
+    else if i + 1 < len && asm.[i] = '/' && asm.[i + 1] = '*' then
+      match find_block_comment_end (i + 2) with
+      | Some j -> strip j
+      | None -> false
+    else false
+  in
+  strip 0
+
+(** Optionally lower comment/whitespace-only inline assembly to no-ops.
+
+    This is an opt-in prototype because Charon currently retains only the asm
+    template string. The lowering is sound for sites that are in fact empty asm
+    barriers with only read-only or [inout] identity operands, no labels and no
+    semantic options/clobbers, but Aeneas cannot check those operand/option
+    side-conditions from today's LLBC payload. *)
+let assume_empty_inline_asm (crate : crate) (f : fun_decl) : fun_decl =
+  if not !Config.assume_empty_asm_is_identity then f
+  else
+    let rec update_block (block : block) : block =
+      { block with statements = update_statements block.statements }
+    and update_statement (st : statement) : statement list =
+      match st.kind with
+      | InlineAsm (asm, targets, _) ->
+          if inline_asm_template_is_empty asm then begin
+            [%warn] st.span
+              ("Assuming inline assembly template " ^ String.escaped asm
+             ^ " is a semantic no-op. This relies on operands/options being \
+                harmless; Charon currently preserves only the template string.");
+            match targets with
+            | [] -> [ { st with kind = Nop } ]
+            | [ target ] -> (update_block target).statements
+            | _ ->
+                [%craise] st.span
+                  "unsupported inline assembly: empty template with multiple \
+                   targets/labels"
+          end
+          else
+            [%craise] st.span
+              ("unsupported statement: " ^ show_statement_kind st.kind)
+      | Drop (place, fn_ptr, kind, on_unwind) ->
+          [ { st with kind = Drop (place, fn_ptr, kind, update_block on_unwind) } ]
+      | Assert (assertion, on_failure, on_unwind) ->
+          [
+            {
+              st with
+              kind = Assert (assertion, on_failure, update_block on_unwind);
+            };
+          ]
+      | Call (call, on_unwind) ->
+          [ { st with kind = Call (call, update_block on_unwind) } ]
+      | Switch switch ->
+          let switch =
+            match switch with
+            | If (scrut, st0, st1) ->
+                If (scrut, update_block st0, update_block st1)
+            | SwitchInt (op, ty, branches, otherwise) ->
+                let branches =
+                  List.map
+                    (fun (pats, br) -> (pats, update_block br))
+                    branches
+                in
+                SwitchInt (op, ty, branches, update_block otherwise)
+            | Match (scrut, branches, otherwise) ->
+                let branches =
+                  List.map
+                    (fun (id, br) -> (id, update_block br))
+                    branches
+                in
+                Match (scrut, branches, Option.map update_block otherwise)
+          in
+          [ { st with kind = Switch switch } ]
+      | Loop loop -> [ { st with kind = Loop (update_block loop) } ]
+      | _ -> [ st ]
+    and update_statements (statements : statement list) : statement list =
+      List.concat_map update_statement statements
+    in
+    let body =
+      match f.body with
+      | StructuredBody body ->
+          StructuredBody { body with body = update_block body.body }
+      | other -> other
+    in
+    let f = { f with body } in
+    [%ldebug
+      let env = Print.crate_to_fmt_env crate in
+      "After [assume_empty_inline_asm]:\n"
+      ^ Print.fun_decl_to_string env "" " " f];
+    f
+
 (** Erase the useless body regions.
 
     We erase the body regions which appear in:
@@ -2494,6 +2603,7 @@ let apply_passes (crate : crate) : crate =
   let function_passes =
     [
       ("fix_closure_lifetimes", fix_closure_lifetimes);
+      ("assume_empty_inline_asm", assume_empty_inline_asm);
       ("erase_body_regions", erase_body_regions);
       ("remove_unreachable", remove_unreachable);
       ("update_loop", update_loops);
