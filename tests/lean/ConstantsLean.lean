@@ -106,8 +106,45 @@ impl_def Bool.Insts.Constants_leanTrait1 : Trait1 Bool := {
   NM := Trait1.NM.default Bool.Insts.Constants_leanTrait1
 }
 
+/-- Trait declaration: [constants_lean::Trait2]
+    Source: 'tests/src/constants-lean.rs', lines 41:0-45:1 -/
+structure Trait2 (Self : Type) where
+  A : Result Std.Usize
+  B : Result Std.Usize
+  C : Result Std.Usize
+
+/-- [constants_lean::Trait2::B]
+    Source: 'tests/src/constants-lean.rs', lines 43:4-43:33 -/
+@[global_simps, irreducible, trait_default]
+def Trait2.B.default {Self : Type} (Trait2Inst : Trait2 Self)
+  : Result Std.Usize := do
+  let i ← Trait2Inst.A
+  i + 1#usize
+
+/-- [constants_lean::{impl constants_lean::Trait2 for bool}::C]
+    Source: 'tests/src/constants-lean.rs', lines 49:4-49:33 -/
+@[global_simps, irreducible, trait_default]
+def Bool.Insts.Constants_leanTrait2.C (Trait2BoolInst : Trait2 Bool)
+  : Result Std.Usize := do
+  let i ← Trait2.B.default Trait2BoolInst
+  i + 1#usize
+
+/-- [constants_lean::{impl constants_lean::Trait2 for bool}::A]
+    Source: 'tests/src/constants-lean.rs', lines 48:4-48:23 -/
+@[global_simps, irreducible]
+def Bool.Insts.Constants_leanTrait2.A : Std.Usize := 3#usize
+
+/-- Trait implementation: [constants_lean::{impl constants_lean::Trait2 for bool}]
+    Source: 'tests/src/constants-lean.rs', lines 47:0-50:1 -/
+@[reducible]
+impl_def Bool.Insts.Constants_leanTrait2 : Trait2 Bool := {
+  A := ok Bool.Insts.Constants_leanTrait2.A
+  B := Trait2.B.default Bool.Insts.Constants_leanTrait2
+  C := Bool.Insts.Constants_leanTrait2.C Bool.Insts.Constants_leanTrait2
+}
+
 /-- Trait declaration: [constants_lean::Params1]
-    Source: 'tests/src/constants-lean.rs', lines 41:0-47:1 -/
+    Source: 'tests/src/constants-lean.rs', lines 52:0-58:1 -/
 structure Params1 (Self : Type) where
   N : Result Std.Usize
   LOGQ : Result Std.Usize
@@ -115,7 +152,7 @@ structure Params1 (Self : Type) where
   CT1_LEN : Result Std.Usize
 
 /-- [constants_lean::Params1::PACKED_LEN]
-    Source: 'tests/src/constants-lean.rs', lines 45:4-45:57 -/
+    Source: 'tests/src/constants-lean.rs', lines 56:4-56:57 -/
 @[global_simps, irreducible, trait_default]
 def Params1.PACKED_LEN.default {Self : Type} (Params1Inst : Params1 Self)
   : Result Std.Usize := do
@@ -125,7 +162,7 @@ def Params1.PACKED_LEN.default {Self : Type} (Params1Inst : Params1 Self)
   i2 / 8#usize
 
 /-- [constants_lean::Params1::CT1_LEN]
-    Source: 'tests/src/constants-lean.rs', lines 46:4-46:44 -/
+    Source: 'tests/src/constants-lean.rs', lines 57:4-57:44 -/
 @[global_simps, irreducible, trait_default]
 def Params1.CT1_LEN.default {Self : Type} (Params1Inst : Params1 Self)
   : Result Std.Usize :=

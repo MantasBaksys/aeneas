@@ -23,6 +23,15 @@ let generic_args_to_string (ctx : extraction_ctx) =
 let texpr_to_string (ctx : extraction_ctx) =
   PrintPure.texpr_to_string (extraction_ctx_to_fmt_env ctx) false "" "  "
 
+let is_impl_const_self_cycle_default (src : item_source)
+    (llbc_generics : Types.generic_params) : bool =
+  match src with
+  | TraitImplItem _ ->
+      List.exists
+        (fun (clause : Types.trait_param) -> clause.origin = Types.TraitSelf)
+        llbc_generics.trait_clauses
+  | _ -> false
+
 (** Compute the names for all the pure functions generated from a rust function.
 *)
 let extract_fun_decl_register_names (ctx : extraction_ctx)
@@ -2177,6 +2186,9 @@ let extract_fun_decl_gen (ctx : extraction_ctx) (fmt : F.formatter)
     if backend () = Lean then
       match def.src with
       | TraitDeclItem _ -> [ "trait_default" ]
+      | _
+        when is_impl_const_self_cycle_default def.src
+               def.signature.llbc_generics -> [ "trait_default" ]
       | _ -> []
     else []
   in
@@ -2547,6 +2559,8 @@ let extract_global_decl_body_gen (span : Meta.span) (ctx : extraction_ctx)
   let trait_default =
     match decl.src with
     | TraitDeclItem _ -> [ "trait_default" ]
+    | _ when is_impl_const_self_cycle_default decl.src decl.llbc_generics ->
+        [ "trait_default" ]
     | _ -> []
   in
   let attributes = attributes @ trait_default in

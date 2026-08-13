@@ -38,6 +38,17 @@ impl Trait1 for bool {
     const M: usize = 1;
 }
 
+trait Trait2 {
+    const A: usize;
+    const B: usize = Self::A + 1;
+    const C: usize;
+}
+
+impl Trait2 for bool {
+    const A: usize = 3;
+    const C: usize = Self::B + 1;
+}
+
 trait Params1 {
     const N: usize;
     const LOGQ: usize;
