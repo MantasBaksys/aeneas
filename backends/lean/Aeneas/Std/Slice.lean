@@ -363,9 +363,15 @@ def core.slice.Slice.get
 def core.slice.Slice.get_unchecked
   {T : Type} {I : Type} {Output : Type}
   (SliceIndexInst : core.slice.index.SliceIndex I (Slice T) Output)
-  (s : Slice T) (i : I) : Result Output :=
-  -- TODO: we should actually use the `SliceIndexInst.get_unchecked` method
-  sorry
+  (s : Slice T) (i : I) : Result Output := do
+  -- `get_unchecked` is the unchecked counterpart of `get`: in bounds the two
+  -- agree, and out of bounds Rust has UB, which we model as `fail .undef`.
+  -- (We do not use `SliceIndexInst.get_unchecked`: that method is stated over
+  -- raw pointers, for which there is no model.)
+  let o ← SliceIndexInst.get i s
+  match o with
+  | some x => ok x
+  | none => fail .undef
 
 @[rust_fun "core::slice::{[@T]}::get_mut"]
 def core.slice.Slice.get_mut
@@ -587,7 +593,10 @@ theorem core.slice.Slice.get_unchecked_SliceIndexUsizeSlice_spec {T s i} [Inhabi
   (h : i.val < s.length) :
   core.slice.Slice.get_unchecked  (core.slice.index.SliceIndexUsizeSlice T) s i
   ⦃ x => x = s[i] ⦄ := by
-  sorry
+  have h' : i.val < s.val.length := h
+  simp only [core.slice.Slice.get_unchecked, core.slice.index.Usize.get, bind_tc_ok,
+    Slice.getElem?_Usize_eq, List.getElem?_eq_getElem h', Slice.getElem_Usize_eq]
+  simp
 
 @[rust_fun "core::slice::{[@T]}::copy_from_slice"]
 def core.slice.Slice.copy_from_slice {T : Type} (_ : core.marker.Copy T)
